@@ -148,7 +148,7 @@ def _line_matches_anchor(line: str, anchors: list[str]) -> bool:
         return False
     if re.match(r"^dakar\s+vers\b", low):
         return False
-    first_tok = re.split(r"[\s:/]+", low, 1)[0]
+    first_tok = re.split(r"[\s:/]+", low, maxsplit=1)[0]
     first_slug = _slug_ville(first_tok.replace("é", "e"))
     for a in anchors:
         if not a or a == "dakar":
