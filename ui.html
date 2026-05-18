@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Dakar Dem Dikk — Chatbot Intelligent</title>
+  <link rel="icon" href="static/logo-demdikk-k.png" type="image/png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="header-container">
+    <div class="header-content">
+      <div class="logo-section">
+        <div class="logo-icon" id="logoFallback">🚌</div>
+        <img src="static/logo-demdikk-k.png" alt="Dakar Dem Dikk" class="logo-img" id="logoImg"
+             onload="this.style.display='flex'; document.getElementById('logoFallback').style.display='none';"
+             onerror="this.style.display='none'; document.getElementById('logoFallback').style.display='flex';">
+        <div class="logo-text">
+          <h1>Dakar Dem Dikk</h1>
+          <p class="subtitle">Assistant intelligent — Lignes, horaires, réservation</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="container">
+    <div id="chat"></div>
+  </div>
+  
+  <form id="f">
+    <div class="input-wrapper">
+      <input id="q" type="text" placeholder="Posez une question ..." autocomplete="off" />
+      <button type="button" class="mic-btn" id="micBtn" title="Dicter votre message">
+        <svg class="mic-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"></path>
+          <path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V21H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-3.07A7 7 0 0 0 19 11z"></path>
+        </svg>
+      </button>
+      <button type="submit" class="send-btn">
+        <span class="send-text">Envoyer</span>
+      </button>
+    </div>
+  </form>
+
+  <!-- XAMPP / Apache (page sur :80 sans Flask) : force l’API avant script.js (évite cache d’un ancien script.js). -->
+  <script>
+    (function () {
+      if (typeof window === 'undefined' || window.CHATBOT_API_BASE) return
+      var h = (location.hostname || '').toLowerCase()
+      var p = location.port || ''
+      var def = location.protocol === 'https:' ? '443' : '80'
+      var port = p || def
+      if (h === 'localhost' || h === '127.0.0.1') {
+        if (port !== '5000') window.CHATBOT_API_BASE = 'http://127.0.0.1:5000'
+      }
+    })()
+  </script>
+  <!-- Prod (même domaine que l’API) : ne rien définir, ou ex. window.CHATBOT_API_BASE = 'https://chatbot.demdikk.sn' -->
+  <script src="script.js"></script>
+</body>
+</html>

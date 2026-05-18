@@ -1,0 +1,51 @@
+# Environnement Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+Lib/
+Scripts/
+share/
+pyvenv.cfg
+*.egg-info/
+
+# Secrets — ne jamais versionner
+.env
+.env.local
+.env.*.local
+
+# Logs runtime
+*.log
+unknown_queries.log
+
+# Données / backups locaux volumineux (régénérables : scraper + indexer)
+data/metadata_backup_*.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Fichiers temporaires de debug/reconstruction
+debug-*.log
+app_corrupted_backup.py
+app_fixed.py
+fix_*.py
+big_split.py
+auto_fix*.py
+split_*.py
+check_*.py
+extract_route*.py
+test_pyc_load.py
+iterfix.py
+reconstruct_app.py
+comprehensive_fix.py

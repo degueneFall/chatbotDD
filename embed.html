@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Dakar Dem Dikk — Chatbot</title>
+  <link rel="icon" href="static/logo-demdikk-k.png" type="image/png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <script>
+    // Optionnel : passer ?api=https://chatbot-api.demdikk.sn
+    // Sinon, script.js utilisera window.CHATBOT_API_BASE si défini, ou localhost en dev.
+    (function () {
+      try {
+        var p = new URLSearchParams(window.location.search || '');
+        var api = (p.get('api') || '').trim();
+        if (api) window.CHATBOT_API_BASE = api.replace(/\/+$/g, '');
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body class="embed">
+  <div class="container embed-container">
+    <div id="chat"></div>
+  </div>
+  
+  <form id="f" class="embed-form">
+    <div class="input-wrapper">
+      <input id="q" type="text" placeholder="Posez une question ..." autocomplete="off" />
+      <button type="button" class="mic-btn" id="micBtn" title="Dicter votre message">
+        <svg class="mic-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"></path>
+          <path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.93V21H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-3.07A7 7 0 0 0 19 11z"></path>
+        </svg>
+      </button>
+      <button type="submit" class="send-btn">
+        <span class="send-text">Envoyer</span>
+      </button>
+    </div>
+  </form>
+
+  <script src="script.js"></script>
+</body>
+</html>
