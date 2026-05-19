@@ -204,7 +204,6 @@ def _json_off_topic():
         "has_structured_data": False,
         "is_city_query": False,
         "is_line_query": False,
-        "raw_format": True,
         "show_more_info": False,
     }
 
@@ -380,24 +379,97 @@ def find_lines_for_stop(stop_name: str) -> list:
     return results
 
 
+def _implicit_stop_card_ok(stop_for_lines: str, matching_lines: list) -> bool:
+    """
+    Pour une question sans mot-clé « arrêt / quelle ligne » (inférence seule),
+    n'affiche la carte « lignes à l'arrêt » que si le libellé d'arrêt correspond
+    clairement au texte saisi (évite un prénom type « assane » matché au milieu
+    d'un nom d'arrêt très long).
+    """
+    qn = _norm((stop_for_lines or "").strip())
+    if not qn or not matching_lines:
+        return False
+    q_words = [w for w in qn.split() if w]
+    for row in matching_lines:
+        ms = _norm((row.get("matched_stop") or "").strip())
+        if not ms:
+            return False
+        toks = [t for t in ms.split() if t]
+        if len(q_words) == 1:
+            qw = q_words[0]
+            if ms == qn:
+                continue
+            if len(toks) == 1 and toks[0] == qw:
+                continue
+            # Dernier segment du libellé (ex. « … (Sandaga) » : token « (sandaga) » après normalisation)
+            last_raw = toks[-1] if toks else ""
+            last_core = re.sub(r"^\W+|\W+$", "", last_raw)
+            if 2 <= len(toks) <= 8 and (last_raw == qw or last_core == qw):
+                continue
+            return False
+        if not _stop_name_matches_query(ms, qn):
+            return False
+    return True
+
+
+# Extraits d'un seul mot trop génériques (ex. « point d'arrêt » + regex « arrêt … » → « service »).
+_BAD_STOP_EXTRACT = frozenset(
+    _norm(x) for x in (
+        "service", "client", "commercial", "facturation",
+        "information", "informations", "accueil", "assistance",
+        "aide", "contact", "réclamation", "reclamation", "urgence",
+    )
+)
+
+
+def _san_stop_tail(t: str) -> str | None:
+    """None si l'extrait ne peut raisonnablement pas être un nom d'arrêt seul."""
+    t = (t or "").strip()
+    if len(t) < 2:
+        return None
+    parts = t.split()
+    if len(parts) == 1 and _norm(parts[0]) in _BAD_STOP_EXTRACT:
+        return None
+    return t[:200]
+
+
 def _extract_stop_from_query(question: str) -> str:
     """Extrait le nom d'arrêt (quelle ligne pour X, arrêt X, passe par X, etc.)."""
     q = question.strip()
+    # « point d'arrêt X » — avant « arrêt … » : sinon « arrêt » matche dans « d'arrêt »
+    # et ne laisse que le mot suivant (ex. « service »).
+    m_pt = re.search(
+        r'\bpoint\s+d[\u0027\u2019]?\s*(?:arrêt|arret|arrêts?|arrets?)\s+(.+?)(?:\?|$)',
+        q, re.IGNORECASE,
+    )
+    if m_pt:
+        got = _san_stop_tail(m_pt.group(1))
+        if got:
+            return got
+    # « l'arrêt X »
+    m_la = re.search(
+        r"\bl[\u0027\u2019]arrêt\s+(.+?)(?:\?|$)", q, re.IGNORECASE,
+    )
+    if m_la:
+        got = _san_stop_tail(m_la.group(1))
+        if got:
+            return got
     # « arrêt Sandaga », « station Leclerc », « terminus Keur Massar »
+    # Pas après une apostrophe (évite « d'arrêt » / « l'arrêt » mal découpés).
     m = re.search(
-        r'\b(?:arret|arrêt|arrêts?|arrets?|station|terminus)\s+(.+?)(?:\?|$)',
+        r'(?<![\u0027\u2019])\b(?:arret|arrêt|arrêts?|arrets?|station|terminus)\s+(.+?)(?:\?|$)',
         q, re.IGNORECASE,
     )
     if m:
-        tail = m.group(1).strip()
-        if len(tail) > 1:
-            return tail[:200]
+        got = _san_stop_tail(m.group(1))
+        if got:
+            return got
     # « passe par Sandaga », « passent par le Plateau »
     m2 = re.search(r'\bpasse(?:nt)?\s+par\s+(.+?)(?:\?|$)', q, re.IGNORECASE)
     if m2:
-        tail = m2.group(1).strip()
-        if len(tail) > 1:
-            return tail[:200]
+        got = _san_stop_tail(m2.group(1))
+        if got:
+            return got
     # Nettoyage générique
     for pat in [
         r'\b(quelle\s+ligne|quelles\s+lignes|comment\s+aller|aller\s+[aà]|'
@@ -410,7 +482,7 @@ def _extract_stop_from_query(question: str) -> str:
     ]:
         q = re.sub(pat, ' ', q, flags=re.IGNORECASE)
     q = re.sub(r'^\s*(pour|vers|[aà]|au|aux|de|du|en)\s+', '', q, flags=re.IGNORECASE)
-    return q.strip()[:200]
+    return _san_stop_tail(q.strip()[:200]) or ""
 
 
 # Mots à ignorer pour l'inférence « nom d'arrêt seul »
@@ -421,6 +493,8 @@ _STOP_QUERY_STOPWORDS = frozenset(
         "ligne", "lignes", "bus", "ddd", "dakar", "dem", "dikk", "transport",
         "reseau", "réseau", "urbain", "urbaine", "les", "des", "une", "pour",
         "vers", "depuis", "jusqua", "jusqu", "donne", "dis", "moi", "svp",
+        "service", "client", "application", "appli",
+        "assane", "thierno", "directeur", "directeurs",
     )
 )
 
@@ -436,7 +510,13 @@ def _infer_stop_name_implicit(question: str) -> str | None:
     if len(qn) < 4:
         return None
     words = [w for w in re.split(r'\s+', question.strip()) if len(w) >= 2]
+    if len(words) == 1 and _norm(words[0]) in _STOP_QUERY_STOPWORDS:
+        return None
     candidates = []
+    # Phrase entière : seulement si ce n'est pas un mot-ban (sinon « service » seul repassait ici).
+    full_q = question.strip()
+    if _norm(full_q) not in _STOP_QUERY_STOPWORDS:
+        candidates.append(full_q)
     # Phrases de 1 à 4 mots consécutifs
     for n in range(1, min(5, len(words) + 1)):
         for i in range(0, len(words) - n + 1):
@@ -445,8 +525,6 @@ def _infer_stop_name_implicit(question: str) -> str | None:
             if len(nw) < 4 or nw in _STOP_QUERY_STOPWORDS:
                 continue
             candidates.append(chunk)
-    # Phrase entière nettoyée
-    candidates.insert(0, question.strip())
 
     best = None
     best_n = 0
@@ -454,6 +532,8 @@ def _infer_stop_name_implicit(question: str) -> str | None:
     for cand in candidates:
         key = _norm(cand)
         if key in seen:
+            continue
+        if key in _STOP_QUERY_STOPWORDS:
             continue
         seen.add(key)
         n = len(find_lines_for_stop(cand))
@@ -535,6 +615,7 @@ def ask():
         return jsonify(_json_off_topic())
 
     qtype = detect_query_type(question)
+    lines_stop_explicit = qtype == "lines_to_stop"
 
     # ── 1. Ville interurbaine ─────────────────────────────────────────────────
     city_section = (get_section_by_ville(city_hint) if city_hint else None) or _detect_city(q_norm)
@@ -595,6 +676,9 @@ def ask():
                 stop_for_lines = infer
                 matching_lines = ml
 
+    if stop_for_lines and matching_lines:
+        if not lines_stop_explicit and not _implicit_stop_card_ok(stop_for_lines, matching_lines):
+            stop_for_lines, matching_lines = None, []
     if stop_for_lines and matching_lines:
         # Liste courte uniquement : « lieu » : Ligne 1, Ligne 4, …
         compact = ", ".join(f"Ligne {l['number']}" for l in matching_lines)

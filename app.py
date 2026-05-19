@@ -1603,9 +1603,7 @@ def _light_clean(text: str) -> str:
 
 
 def _make_chatbot_result(section: str) -> dict:
-    """Construit un dict résultat standard depuis un extrait de page officielle.
-    Le flag raw_format=True indique au wrapper de ne PAS reformuler avec DeepSeek
-    afin de conserver la structure ### / – pour l'affichage en blocs."""
+    """Construit un dict résultat standard depuis un extrait de page officielle."""
     clean = _light_clean(section) if section else section
     return {
         "answer": clean,
@@ -1618,7 +1616,6 @@ def _make_chatbot_result(section: str) -> dict:
         "has_structured_data": False,
         "is_city_query": False,
         "is_line_query": False,
-        "raw_format": True,
     }
 
 
@@ -1684,7 +1681,6 @@ if _original_ask:
                 "results": [],
                 "query_type": "general",
                 "needs_clarification": False,
-                "raw_format": True,
                 "show_more_info": False,
             }
             _log_unknown_query(
@@ -1742,8 +1738,10 @@ if _original_ask:
             # issue de app_backup est déjà exploitable.
             rag_ok = _rag_answer_usable(data)
 
-            # Pour "application", section officielle chatbot uniquement si l'index n'a rien d'utile
-            if any(k in qn for k in ("application", "appli")) and not rag_ok:
+            # Application mobile : toujours préférer l'extrait page officielle (chatbot-2303)
+            # lorsqu'il est disponible — l'index peut renvoyer un chunk « acceptable » (score)
+            # mais sans répondre à la question (Play Store, fonctionnalités, etc.).
+            if any(k in qn for k in ("application", "appli", "google play", "app store")):
                 fb_app = _fallback_from_site(question)
                 if fb_app:
                     data = fb_app
@@ -1808,9 +1806,6 @@ if _original_ask:
             if any(k in qn for k in _site_triggers) and not rag_ok:
                 fb3 = _fallback_from_site(question)
                 if fb3:
-                    # raw_format=True → garder la structure brute (### / –) pour l'affichage en blocs
-                    if fb3.get("raw_format"):
-                        return (jsonify(fb3), *rest) if rest else jsonify(fb3)
                     enhanced3 = _enhance_with_deepseek(fb3, question)
                     return (jsonify(enhanced3), *rest) if rest else jsonify(enhanced3)
 

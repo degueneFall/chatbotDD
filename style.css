@@ -171,6 +171,67 @@ body::before {
   border-left: none;
 }
 
+/* Rangée « copier » sous le contenu (évite le chevauchement avec « Plus d'infos ») */
+.copy-fab-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-top: 0.55rem;
+  padding-top: 0.5rem;
+  clear: both;
+}
+.bot-reply-block .copy-fab-row {
+  border-top: 1px solid rgba(21, 175, 151, 0.14);
+}
+.line-details-container .copy-fab-row {
+  margin-top: 0.6rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.28);
+}
+.copy-fab {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  margin: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 8px;
+  cursor: pointer;
+  color: #94a3b8;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: color 0.2s, background 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+.copy-fab:hover {
+  color: #64748b;
+  background: #f8fafc;
+  border-color: rgba(100, 116, 139, 0.45);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+.copy-fab:focus-visible {
+  outline: 2px solid var(--ddd-primary);
+  outline-offset: 2px;
+}
+.copy-fab--ok {
+  color: #16a34a;
+  border-color: rgba(22, 163, 74, 0.35);
+  background: #f0fdf4;
+}
+.copy-fab__svg {
+  display: block;
+  pointer-events: none;
+}
+
+/* « Plus de détails » après clic : état discret */
+.small-btn.small-btn--state-done {
+  opacity: 0.85;
+  cursor: default;
+  font-size: 0.85em;
+}
+
 /* Réponses assistant seules (hors extrait site) : texte continu, sans sous-cartes */
 .answer-content.answer-plain {
   margin: 0;
@@ -629,17 +690,6 @@ input[type=text]::placeholder {
   color: rgba(255,255,255,0.9);
 }
 
-/* Suggestions */
-.suggestions {
-  margin: 1.5rem 0;
-  padding: 1.5rem;
-  background: linear-gradient(135deg, #f0faf8 0%, #e6f5f2 100%);
-  border-radius: 16px;
-  border: 2px solid var(--list-border);
-  box-shadow: var(--shadow-sm);
-  animation: fadeInUp 0.5s ease-out;
-}
-
 @keyframes fadeInUp {
     from {
         opacity: 0;
@@ -655,72 +705,6 @@ input[type=text]::placeholder {
     0%, 100% { transform: rotate(0deg); }
     25% { transform: rotate(20deg); }
     75% { transform: rotate(-20deg); }
-}
-
-.suggestion-title {
-  font-size:0.9em;
-  color:var(--muted);
-  margin-bottom:0.75rem;
-  font-weight:600;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.suggestion-title::before {
-  content: "💡";
-}
-
-.suggestion-buttons {
-  display:flex;
-  flex-wrap:wrap;
-  gap:0.5rem;
-}
-
-.suggestion-btn {
-  font-size:0.9em;
-  padding:10px 16px;
-  border-radius:25px;
-  border:2px solid var(--list-border);
-  background:white;
-  cursor:pointer;
-  color:var(--ddd-primary);
-  transition:all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  white-space: nowrap;
-  font-weight: 500;
-  position: relative;
-  overflow: hidden;
-}
-
-.suggestion-btn::before {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 0;
-  height: 0;
-  border-radius: 50%;
-  background: var(--primary-gradient);
-  transform: translate(-50%, -50%);
-  transition: width 0.4s, height 0.4s;
-  z-index: 0;
-}
-
-.suggestion-btn span {
-  position: relative;
-  z-index: 1;
-}
-
-.suggestion-btn:hover {
-  color: var(--ddd-dark);
-  background: rgba(21, 175, 151, 0.12);
-  border-color: var(--ddd-primary);
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(21, 175, 151, 0.2);
-}
-
-.suggestion-btn:hover::before {
-  display: none;
 }
 
 /* Badges */
@@ -874,15 +858,6 @@ input[type=text]::placeholder {
   .bubble {
     max-width:92%;
     padding:14px 18px;
-  }
-  
-  .suggestion-buttons {
-    gap:0.5rem;
-  }
-  
-  .suggestion-btn {
-    font-size:0.85em;
-    padding:8px 14px;
   }
   
   .controls {

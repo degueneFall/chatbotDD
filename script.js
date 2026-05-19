@@ -135,6 +135,13 @@ function formatPlainAnswerHtml(text) {
   return `<div class="answer-content answer-plain">${escapeHtml(t).replace(/\r?\n/g, '<br>')}</div>`
 }
 
+/** Icône « copier » (deux plans superposés) — utilisée dans `.copy-fab-row` sous la réponse. */
+const COPY_FAB_SVG =
+  '<svg class="copy-fab__svg" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<rect x="8" y="8" width="12" height="12" rx="2"/>' +
+  '<rect x="4" y="4" width="12" height="12" rx="2"/>' +
+  '</svg>'
+
 /**
  * Copie du texte dans le presse-papier — fonctionne même sans HTTPS.
  * Utilise clipboard API moderne avec fallback execCommand.
@@ -144,6 +151,15 @@ function formatPlainAnswerHtml(text) {
 function robustCopy(text, btn) {
   const feedback = () => {
     if (!btn) return
+    if (btn.classList && btn.classList.contains('copy-fab')) {
+      btn.classList.add('copy-fab--ok')
+      btn.setAttribute('aria-label', 'Copié')
+      setTimeout(() => {
+        btn.classList.remove('copy-fab--ok')
+        btn.setAttribute('aria-label', 'Copier')
+      }, 2000)
+      return
+    }
     const original = btn.innerHTML
     btn.innerHTML = '<span>✓</span> Copié'
     setTimeout(() => { btn.innerHTML = original }, 2000)
@@ -799,8 +815,6 @@ window.onload = function() {
          </div>
       <p style="margin-top: 1.5rem; font-size: 1.1em;"><strong style="color: var(--bot);">Comment puis-je vous aider aujourd'hui ?</strong></p>
     `)
-    
-    addQuickSuggestions()
   }, 300)
 }
 
@@ -1080,8 +1094,8 @@ form.addEventListener('submit', async (e)=>{
       if (json.query_type === 'lines_to_stop') {
         const stopRequested = json.stop_requested || '';
         const answerRaw = json.answer || json.summary || '';
-        const totalLines = json.total_lines != null ? json.total_lines : 0;
         const rows = Array.isArray(json.results) ? json.results : [];
+        const totalLines = rows.length > 0 ? rows.length : (json.total_lines != null ? json.total_lines : 0);
         let listHtml = '';
         if (rows.length > 0) {
           listHtml = '<ul class="lines-stop-list">' + rows.map((row) => {
@@ -1098,11 +1112,11 @@ form.addEventListener('submit', async (e)=>{
             <p class="lines-stop-intro">${totalLines} ligne(s) desservent cet arrêt ou ce lieu :</p>
             <div class="lines-stop-compact">${listHtml}</div>
           </div>
-          ${formatMoreInfoMeta(json)}
-          <div class="controls">
-            <button class="small-btn" onclick="showAllLines()"><span>🚍</span> Retour aux lignes</button>
-            <button class="small-btn" id="copy-lines-to-stop-btn"><span>📋</span> Copier</button>
-          </div>
+          <div class="copy-fab-row"><button type="button" class="copy-fab" id="copy-lines-to-stop-btn" title="Copier" aria-label="Copier">${COPY_FAB_SVG}</button></div>
+        </div>
+        ${formatMoreInfoMeta(json)}
+        <div class="controls">
+          <button class="small-btn" onclick="showAllLines()"><span>🚍</span> Retour aux lignes</button>
         </div>`;
         placeholder.querySelector('.bubble').innerHTML = html;
         const bubble = placeholder.querySelector('.bubble');
@@ -1125,12 +1139,10 @@ form.addEventListener('submit', async (e)=>{
       if (json.query_type === 'all_lines_summary') {
         // Afficher toutes les lignes
         placeholder.querySelector('.bubble').innerHTML = `
+            <div class="bot-reply-block">
             ${formatAllLinesSummary(json)}
             ${formatMoreInfoMeta(json)}
-            <div class="controls">
-                <button class="small-btn" id="copy-lines-btn">
-                    <span>📋</span> Copier
-                </button>
+            <div class="copy-fab-row"><button type="button" class="copy-fab" id="copy-lines-btn" title="Copier" aria-label="Copier">${COPY_FAB_SVG}</button></div>
             </div>
         `;
 
@@ -1218,11 +1230,11 @@ form.addEventListener('submit', async (e)=>{
           `;
         }
         html += `
+            <div class="copy-fab-row"><button type="button" class="copy-fab" id="copy-line-summary-btn" title="Copier" aria-label="Copier">${COPY_FAB_SVG}</button></div>
             </div>
             ${formatMoreInfoMeta(json)}
             <div class="controls">
                 <button class="small-btn" onclick="showAllLines()"><span>🚍</span> Retour aux lignes</button>
-                <button class="small-btn" id="copy-line-summary-btn"><span>📋</span> Copier</button>
             </div>
         `;
         placeholder.querySelector('.bubble').innerHTML = html;
@@ -1306,14 +1318,12 @@ form.addEventListener('submit', async (e)=>{
         html += `
                     </div>
                 </div>
+            <div class="copy-fab-row"><button type="button" class="copy-fab" id="copy-line-details-btn" title="Copier" aria-label="Copier">${COPY_FAB_SVG}</button></div>
             </div>
             ${formatMoreInfoMeta(json)}
             <div class="controls">
                 <button class="small-btn" onclick="showAllLines()">
                     <span>🚍</span> Retour aux lignes
-                </button>
-                <button class="small-btn" id="copy-line-details-btn">
-                    <span>📋</span> Copier
                 </button>
             </div>
         `;
@@ -1367,7 +1377,7 @@ form.addEventListener('submit', async (e)=>{
 
       const hasIndexedSnippet = json.results && json.results.length > 0
       const structuredInAnswer =
-        answerHasStructuredBlockMarkers(cleanAnswer) || json.raw_format === true
+        answerHasStructuredBlockMarkers(cleanAnswer)
       const usePlainAnswer =
         !isCityQuery && !isLineQuery && !hasIndexedSnippet && !structuredInAnswer
 
@@ -1413,12 +1423,18 @@ form.addEventListener('submit', async (e)=>{
         && (cleanAnswer.length > PREVIEW_MAX || detailsContent !== cleanAnswer)
       const encodedFull = encodeURIComponent(cleanAnswer)
       const encodedDetails = encodeURIComponent(detailsContent)
-      responseHtml += `
-        <div class="controls">
-          ${showDetails ? `<button class="small-btn" data-action="show-full-content" data-full="${encodedDetails}"><span>📖</span> Plus de détails</button>` : ''}
-          <button class="small-btn" data-action="copy" data-copy="${encodedFull}"><span>📋</span> Copier</button>
-        </div>
-      `
+      const copyFabBtn =
+        `<div class="copy-fab-row"><button type="button" class="copy-fab" data-action="copy" data-copy="${encodedFull}" title="Copier" aria-label="Copier">${COPY_FAB_SVG}</button></div>`
+      responseHtml =
+        '<div class="bot-reply-block">' +
+        responseHtml +
+        copyFabBtn +
+        '</div>' +
+        (showDetails
+          ? '<div class="controls">' +
+            `<button class="small-btn" data-action="show-full-content" data-full="${encodedDetails}"><span>📖</span> Plus de détails</button>` +
+            '</div>'
+          : '')
       
       placeholder.querySelector('.bubble').innerHTML = responseHtml
 
@@ -1433,7 +1449,8 @@ form.addEventListener('submit', async (e)=>{
             contentDiv.innerHTML = formatResponseText(fullContent)
           }
           this.disabled = true
-          this.innerHTML = '<span>✓</span> Affiché'
+          this.classList.add('small-btn--state-done')
+          this.textContent = '✓ Affiché'
           chat.scrollTop = chat.scrollHeight
         })
       }
@@ -2339,43 +2356,6 @@ function cleanDescription(description) {
       return formatted
     }
 
-
-// Ajouter des suggestions rapides (questions fréquentes)
-function addQuickSuggestions() {
-  const suggestions = [
-    "Lignes",
-    "Touba",
-    "Comment réserver ?",
-    "Application",
-    "Abonnement",
-    "Remboursement",
-    "Objets perdus",
-    "Contact",
-    "Fatick",
-    "Saint-Louis"
-  ]
-  
-  const container = document.createElement('div')
-  container.className = 'suggestions'
-  container.innerHTML = `
-    <div class="suggestion-title">Questions fréquentes</div>
-    <div class="suggestion-buttons">
-      ${suggestions.map(s => 
-        `<button class="suggestion-btn" data-suggestion="${s}">${s}</button>`
-      ).join('')}
-    </div>
-  `
-  
-  chat.appendChild(container)
-  
-  // Gestionnaires pour les suggestions
-  container.querySelectorAll('button[data-suggestion]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      qin.value = btn.dataset.suggestion
-      form.dispatchEvent(new Event('submit'))
-    })
-  })
-}
 
 // Focus automatique sur le champ de saisie
 qin.focus()
