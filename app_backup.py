@@ -161,6 +161,7 @@ _OFF_TOPIC_TOKENS = frozenset({
     "politique", "president", "gouvernement", "election",
     "macky", "sall", "sonko", "wade",
     "football", "sport", "match",
+    "can", "caf", "copa", "mondial", "champions", "ligue", "nba", "rugby", "tennis",
     "barca", "barcelona", "barcelone",
     "messi", "ronaldo", "psg", "om", "ol", "liverpool", "chelsea", "arsenal",
     "cinema", "film", "serie", "musique",
@@ -185,6 +186,9 @@ def _is_off_topic_question(question: str) -> bool:
     qn = _norm(question)
     if not qn:
         return False
+    # Politesse / banalités : même réponse que le hors-sujet métier (pas de RAG ni fiche ligne).
+    if _is_smalltalk_question(question):
+        return True
     if _question_looks_gibberish_normed(qn):
         return True
     if not (set(qn.split()) & _OFF_TOPIC_TOKENS):
@@ -590,6 +594,143 @@ def _search(query: str, top_k: int = 5) -> list:
     return results
 
 
+def _question_significant_word_count(question: str) -> int:
+    """Nombre de tokens « utiles » (évite que « ? » compte comme un 4ᵉ mot)."""
+    parts = (question or "").strip().split()
+    n = 0
+    for w in parts:
+        w2 = re.sub(
+            r"^[^\wàâäéèêëïîôùûüÿœæ0-9'-]+|[^\wàâäéèêëïîôùûüÿœæ0-9'-]+$",
+            "",
+            w,
+            flags=re.IGNORECASE,
+        )
+        if len(w2) >= 2:
+            n += 1
+    return n
+
+
+def _is_smalltalk_question(question: str) -> bool:
+    """Politesse / banalités — ne pas les coller au contexte « ligne » de l'historique."""
+    qn = _norm((question or "").strip())
+    if not qn:
+        return False
+    if re.search(
+        r"^("
+        r"tu\s+vas(\s+bien)?|comment\s+(tu\s+)?vas|ça\s+va|tout\s+va(\s+bien)?|"
+        r"comment\s+allez[-\s]?vous|vous\s+allez\s+bien|"
+        r"merci(\s+(beaucoup|bien))?|ok|d'accord|super|génial|parfait|"
+        r"salut|bonjour|bonsoir|coucou|hello|hi|bye|au\s+revoir|à\s+bientôt"
+        r")[\s?!.,;:]*$",
+        qn,
+    ):
+        return True
+    return False
+
+
+def _parse_history_entries(history_raw) -> list:
+    """Historique client [{role, content}, …] ; liste vide si absent ou invalide."""
+    if not history_raw or not isinstance(history_raw, list):
+        return []
+    out = []
+    for item in history_raw[-40:]:
+        if not isinstance(item, dict):
+            continue
+        role = (item.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        c = (item.get("content") or "").strip()
+        if c:
+            out.append({"role": role, "content": c})
+    return out
+
+
+def _history_last_city_section(entries: list) -> dict | None:
+    """Dernière section interurbaine mentionnée dans l'historique (du plus récent au plus ancien)."""
+    for item in reversed(entries):
+        sec = _detect_city(_norm(item.get("content") or ""))
+        if sec:
+            return sec
+    return None
+
+
+def _history_last_line_number(entries: list) -> str | None:
+    """Dernier numéro / libellé de ligne urbain détecté dans l'historique."""
+    for item in reversed(entries):
+        ln = _detect_line_number(item.get("content") or "")
+        if ln:
+            return ln
+    return None
+
+
+def _city_token_for_enrichment(section: dict) -> str:
+    """Mot-clé ville pour préfixer la question (aligné sur les entrées interurbaines)."""
+    villes = section.get("villes") or []
+    if villes:
+        return str(villes[0]).strip()
+    tit = (section.get("titre") or "").strip()
+    return tit.split()[0] if tit else "ville"
+
+
+def _enrich_short_question_from_history(question: str, history_raw) -> str:
+    """
+    Résolution de contexte : question courte (< 4 mots) + historique avec ville ou ligne récente
+    → enrichir avant city_info / line_X / RAG.
+    """
+    q = (question or "").strip()
+    if not q or _question_significant_word_count(q) >= 4:
+        return q
+    if _is_smalltalk_question(q):
+        return q
+    entries = _parse_history_entries(history_raw)
+    if not entries:
+        return q
+    # Déjà explicite : ne pas dupliquer
+    if _detect_city(_norm(q)) or _detect_line_number(q):
+        return q
+
+    city_sec = _history_last_city_section(entries)
+    line_num = _history_last_line_number(entries)
+    if not city_sec and not line_num:
+        return q
+
+    qn = _norm(q)
+    # Suivi pronominal : « elle part d'où » après une fiche ligne dans l'historique
+    if line_num and re.match(
+        r"^\s*(elle|il|celle|celui|ça|ce)\b",
+        q,
+        re.IGNORECASE,
+    ):
+        return f"ligne {line_num} {q}".strip()
+
+    priceish = any(
+        w in qn
+        for w in (
+            "prix", "tarif", "cout", "fcfa", "coute", "combien", "cher", "pay", "paye",
+            "horaire", "depart", "contact", "billet", "reservation",
+        )
+    )
+    lineish = any(
+        w in qn
+        for w in (
+            "ligne", "arret", "arrets", "station", "terminus", "bus", "arrets",
+            "arret", "dessert", "desservent",
+        )
+    )
+
+    if city_sec and line_num:
+        if priceish and not lineish:
+            return f"{_city_token_for_enrichment(city_sec)} {q}".strip()
+        if lineish and not priceish:
+            return f"ligne {line_num} {q}".strip()
+        return f"{_city_token_for_enrichment(city_sec)} ligne {line_num} {q}".strip()
+    if city_sec:
+        return f"{_city_token_for_enrichment(city_sec)} {q}".strip()
+    if line_num:
+        return f"ligne {line_num} {q}".strip()
+    return q
+
+
 # ── Route /ask ────────────────────────────────────────────────────────────────
 @app.route('/ask', methods=['POST'])
 def ask():
@@ -598,7 +739,14 @@ def ask():
     except Exception:
         body = {}
 
-    question  = normalize_query_typos((body.get('question') or body.get('q') or '').strip())
+    if 'history' in body:
+        history_raw = body.get('history')
+    else:
+        history_raw = body.get('conversationHistory')
+
+    question_raw = (body.get('question') or body.get('q') or '').strip()
+    question_resolved = _enrich_short_question_from_history(question_raw, history_raw)
+    question  = normalize_query_typos(question_resolved.strip())
     city_hint = (body.get('city') or '').strip()
 
     if not question:
@@ -662,13 +810,13 @@ def ask():
         stop_for_lines = _extract_stop_from_query(question)
         matching_lines = find_lines_for_stop(stop_for_lines) if stop_for_lines else []
         if not matching_lines:
-            infer = _infer_stop_name_implicit(question)
+            infer = _infer_stop_name_implicit(question) if not _is_smalltalk_question(question) else None
             if infer:
                 stop_for_lines = infer
                 matching_lines = find_lines_for_stop(infer)
     # Nom d'arrêt seul (ex. « Sandaga ») : pas de mot-clé « arrêt / quelle ligne »,
     # mais hors-sujet (sport, etc.) déjà filtré plus haut — on tente une correspondance arrêt.
-    elif qtype not in ("all_lines_summary", "line_X"):
+    elif qtype not in ("all_lines_summary", "line_X") and not _is_smalltalk_question(question):
         infer = _infer_stop_name_implicit(question)
         if infer:
             ml = find_lines_for_stop(infer)

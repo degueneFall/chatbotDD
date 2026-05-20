@@ -5,6 +5,38 @@ const micBtn = document.getElementById('micBtn')
 let recognition = null
 let isListening = false
 
+/** Derniers échanges (max 6 tours user + assistant) envoyés à /ask */
+let conversationHistory = []
+const CONVERSATION_HISTORY_MAX_MESSAGES = 12
+
+function assistantPlainTextFromJson(json) {
+  if (!json || typeof json !== 'object') return ''
+  let t = (json.answer || json.summary || json.clarification_prompt || '').trim()
+  if (t) return t
+  if (json.query_type === 'lines_to_stop') {
+    const stop = json.stop_requested || ''
+    const rows = Array.isArray(json.results) ? json.results : []
+    const nums = rows.map((r) => r && r.number).filter(Boolean).join(', ')
+    if (nums) return `Lignes pour « ${stop} » : ${nums}`
+  }
+  if (json.query_type === 'all_lines_summary') return 'Liste du réseau urbain'
+  if (json.query_type === 'line_details' && json.line_details) {
+    const L = json.line_details
+    return `${L.number} : ${L.start} ↔ ${L.end}`
+  }
+  return 'Réponse du chatbot'
+}
+
+function pushConversationExchange(userText, json) {
+  const u = String(userText || '').trim()
+  const a = assistantPlainTextFromJson(json)
+  conversationHistory.push({ role: 'user', content: u })
+  conversationHistory.push({ role: 'assistant', content: a })
+  while (conversationHistory.length > CONVERSATION_HISTORY_MAX_MESSAGES) {
+    conversationHistory.splice(0, conversationHistory.length - CONVERSATION_HISTORY_MAX_MESSAGES)
+  }
+}
+
 // Phrases courantes
 const bonjour = [
   'bonjour', 'salut', 'bonsoir', 'bonne journée', 'bonne soirée', 
@@ -1058,7 +1090,7 @@ form.addEventListener('submit', async (e)=>{
         const attempt = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question: qExpanded }),
+          body: JSON.stringify({ question: qExpanded, conversationHistory }),
           signal: ctrl.signal
         })
         clearTimeout(t)
@@ -1085,6 +1117,7 @@ form.addEventListener('submit', async (e)=>{
       renderClarificationMenu(q, placeholder, menu.why, menu.options)
       
       chat.scrollTop = chat.scrollHeight
+      pushConversationExchange(qExpanded, json)
       return
     }
     
@@ -1134,6 +1167,7 @@ form.addEventListener('submit', async (e)=>{
           copyBtn.addEventListener('click', () => robustCopy(copyLinesText, copyBtn));
         }
         chat.scrollTop = chat.scrollHeight;
+        pushConversationExchange(qExpanded, json)
         return;
       }
       if (json.query_type === 'all_lines_summary') {
@@ -1265,6 +1299,7 @@ form.addEventListener('submit', async (e)=>{
             </div>
           `;
           chat.scrollTop = chat.scrollHeight;
+          pushConversationExchange(qExpanded, json)
           return;
         }
         // Afficher nom de la ligne, nombre d'arrêts et liste des arrêts (toujours)
@@ -1479,6 +1514,7 @@ form.addEventListener('submit', async (e)=>{
         </div>
       `
     }
+    pushConversationExchange(qExpanded, json)
   } catch(err){
     console.error('Erreur:', err)
     placeholder.querySelector('.bubble').innerHTML = `

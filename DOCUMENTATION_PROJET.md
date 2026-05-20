@@ -1,184 +1,147 @@
 # Documentation du projet — Dakar Dem Dikk Chatbot
 
-Ce document décrit tout ce qui a été réalisé dans le projet **Dakar Dem Dikk Chatbot** jusqu’à ce jour.
+Document de **référence fonctionnelle** (architecture et flux), aligné sur la structure actuelle du dépôt.  
+**Sans détail sensible** : pas de clés API, secrets ou procédures d’authentification précises — uniquement ce qui est public dans le code (noms de variables d’environnement, rôles des modules).
 
 ---
 
 ## 1. Vue d’ensemble
 
-**Objectif** : Assistant conversationnel (chatbot) pour répondre aux questions des usagers sur **Dakar Dem Dikk** (transport public au Sénégal) : lignes urbaines, arrêts, réseau interurbain (villes, prix, horaires, contacts), réservation, etc.
+**Objectif** : assistant web pour les usagers **Dakar Dem Dikk** (lignes urbaines, arrêts, interurbain, thématiques type abonnement / contact / réservation, etc.).
 
-**Stack** : Backend Flask (Python), recherche par similarité (embeddings Sentence Transformers + fallback TF-IDF), données structurées interurbain, interface web (HTML/CSS/JS).
+**Stack** : Python **Flask**, interface **HTML / CSS / JavaScript**, index **vectoriel** (embeddings + fallback mots-clés), données structurées **lignes** et **interurbain**, enrichissement optionnel des réponses via un **LLM** configuré côté serveur (reformulation, pas de « connaissance » hors contexte indexé).
 
-**Sources de données** :
-- Site **demdikk.sn** (pages scrapées et indexées)
-- Fichier de référence **interurbain_data.py** (prix, horaires, contacts par ville)
+**Sources principales** :
 
----
+- Pages **demdikk.sn** scrapées puis indexées (`data/scraped.jsonl` → `metadata.json` + `embeddings.npy`).
+- **Lignes urbaines** : fichier Python de données (`lines_data.py`), aligné sur la page réseau urbain.
+- **Interurbain** : `interurbain_data.py` (et éventuellement snapshot JSON / secours selon la configuration du dépôt).
 
-## 2. Structure du projet
+### Ce que le chatbot fait concrètement pour l’usager
 
-| Fichier / Dossier | Rôle |
-|-------------------|------|
-| **app.py** | Application Flask principale (~6075 lignes) : API `/ask`, logique de requêtes, extraction lignes/arrêts/villes, recherche, réponses structurées |
-| **interurbain_data.py** | Données de référence du réseau interurbain (villes, prix, horaires, lieux de contact) + fonctions `get_section_by_ville`, `get_prix_for_ville`, `get_contact_for_ville` |
-| **scraper.py** | Scraping de pages demdikk.sn (info-voyageurs, services, presentation, contact) → `data/scraped.jsonl` |
-| **indexer.py** | Découpage des textes en chunks, calcul des embeddings (SentenceTransformer), sauvegarde `data/embeddings.npy` et `data/metadata.json` |
-| **split_metadata.py** | Découpage fin des documents (par paragraphes/phrases, MAX_WORDS=120) pour améliorer l’index |
-| **ui.html** | Page d’interface du chatbot (titre, zone de chat, formulaire de question) |
-| **script.js** | Logique frontend : envoi des questions à `/ask`, affichage des réponses, boutons « Lignes », détails par ligne, phrases courantes (bonjour, merci, aide…) |
-| **style.css** | Styles de l’interface (header, chat, formulaire) |
-| **requirements.txt** | Dépendances : flask, requests, beautifulsoup4, sentence-transformers, numpy |
-| **data/** | Données : `scraped.jsonl`, `metadata.json`, `embeddings.npy` (générés par scraper + indexer) |
-| **static/** | Assets (ex. logo Dem Dikk) |
-| **test_*.py** | Batterie de tests (API, extraction lignes/arrêts, interurbain, catégorisation, etc.) |
-| **check_data.py**, **count_lines.py**, **examine_format.py** | Scripts d’inspection des données et du format |
+Le document ci-dessous reste une **doc technique** ; voici en revanche la **promesse fonctionnelle** telle qu’implémentée dans le code (résumé, non exhaustif mot à mot) :
+
+- **Réseau urbain Dakar** : obtenir la **liste des lignes**, le **détail d’une ligne** (terminus, sens, **liste d’arrêts**), ou les **lignes qui passent par un arrêt / un lieu** (y compris certaines questions très courtes reconnues comme nom d’arrêt).
+- **Réseau interurbain** : pour une **ville** reconnue, obtenir **prix, horaires, jours, point de départ, contacts** structurés à partir des données de référence (avec secours si la synchro site est incomplète).
+- **Questions « générales »** : réponses construites à partir de **passages du site** préalablement indexés (recherche par similarité, avec secours par mots-clés si le modèle d’embeddings n’est pas disponible).
+- **Sujets souvent demandés** (abonnement, Tek Dem, application, contact, remboursement, etc.) : le **wrapper** peut **compléter le contexte** avec des extraits ciblés d’une **page officielle type FAQ**, puis éventuellement **reformuler** la réponse avec un LLM **sans inventer** hors de ce contexte.
+- **Hors sujet** (sport, météo, etc.) : réponse de **refus poli** plutôt qu’une réponse transport inventée.
+- **Aucune info fiable trouvée** : message orientant vers les **canaux officiels** (téléphone, email, site), plutôt que de deviner.
+
+Ce n’est **pas** une liste de toutes les formulations possibles ni un catalogue marketing : le détail des mots-clés et règles est dans le code (`app_backup.py`, `app.py`, `script.js`).
 
 ---
 
-## 3. Backend (app.py)
+## 2. Architecture logicielle
 
-### 3.1 Configuration et chargement
+Le projet suit un **découpage en deux couches** :
 
-- **SKIP_MODEL** : variable d’environnement pour ne pas charger SentenceTransformer (ex. en dev).
-- **Modèle** : `all-MiniLM-L6-v2` pour les embeddings.
-- **Fichiers** : `data/embeddings.npy`, `data/metadata.json` ; si absent, fallback TF-IDF ou recherche par mots.
-- **Sources** :
-  - Lignes/arrêts urbains : `DEM_DIKK_LINES_URL` = https://demdikk.sn/reseau-urbain-dakar/
-  - Interurbain : `INTERURBAIN_URL` = https://demdikk.sn/reseau-interurbain/
+| Couche | Fichier | Rôle |
+|--------|---------|------|
+| **Cœur API** | `app_backup.py` | Application Flask « métier » : `/ask`, recherche dans l’index, lignes / arrêts / villes, réponses JSON structurées. Peut être chargée seule ou via le wrapper. |
+| **Enrichissement** | `app.py` | Point d’entrée **recommandé** en production : importe le module ci-dessus, enveloppe `/ask` (reformulation, fallbacks ciblés, recherche sur contenu officiel type page FAQ), routes utilitaires (santé, rafraîchissement d’index, diagnostic). |
 
-### 3.2 Correction des requêtes
-
-- **normalize_query_typos** : correction de fautes courantes (ex. srvice → service, reservaton → réservation) via `QUERY_TYPO_MAP` et distance de Levenshtein sur `QUERY_KNOWN_WORDS`.
-
-### 3.3 Nettoyage et extraction de texte
-
-- **clean_and_deduplicate_text** : suppression HTML, déduplication de paragraphes/phrases, préservation des sections pour la page interurbain (## TOUBA, ## FATICK…).
-- **extract_complete_content** : contenu complet + snippet propre (frontières de phrases, pas de coupure au milieu).
-- **sanitize_display_text**, **trim_to_sentence_start**, **ensure_sentence_boundaries**, **create_intelligent_snippet** : nettoyage et troncature intelligente pour l’affichage.
-
-### 3.4 Lignes et arrêts (réseau urbain Dakar)
-
-- **extract_complete_line_details** : extraction du bloc d’une ligne (départ ↔ arrivée, liste d’arrêts) à partir du texte de la page réseau urbain ; gestion des variantes (LIGNE 7, 16A, TAF TAF, TAF TAF OUAKAM, TERMINUS RUFISQUE).
-- **extract_stops_from_line_content** / **extract_stops_for_line** / **extract_stops_from_text** : extraction des listes d’arrêts à partir du contenu d’une ligne ou du texte global.
-- **find_lines_for_stop** : pour une requête du type « quelle ligne pour X » ou « je veux aller à X », trouve les lignes qui desservent l’arrêt X.
-- **extract_line_summary** : résumé de toutes les lignes (numéro, départ, arrivée).
-- **improve_line_extraction_with_categories** : catégorisation des lignes (urbaines, banlieue, etc.).
-- **OFFICIAL_LINE_KEYS** : liste des identifiants de lignes officielles (1, 2, 4, …, TAF TAF, TERMINUS RUFISQUE, etc.).
-- **KNOWN_CITIES** / **CITY_VARIANTS** : villes du réseau interurbain avec variantes (accents, orthographes).
-
-### 3.5 Réseau interurbain (villes)
-
-- **extract_city_from_query** : détection de la ville dans la question (ex. Touba, Fatick, Saint-Louis).
-- **_get_interurbain_city_block** : isolation du bloc de texte correspondant à une ville sur la page interurbain.
-- **extract_structured_info** / **clean_structured_data** : extraction prix, horaires, contacts, départ depuis le texte.
-- **extract_city_contact**, **format_structured_to_text**, **create_city_snippet** : mise en forme pour l’affichage.
-- **build_structured_info_from_interurbain_list** : construction de la réponse structurée à partir de **interurbain_data.py** (prioritaire quand la ville est dans la liste).
-
-### 3.6 Recherche (retrieve)
-
-- **retrieve(query, k)** : recherche des documents les plus pertinents :
-  - Si modèle + embeddings : similarité cosinus (query vs embeddings).
-  - Sinon TF-IDF ou score par mots.
-  - Agrégation par URL, prise de plusieurs segments par URL (tous pour la page interurbain, sinon `SEGMENTS_PER_URL`).
-  - Boosting : ville dans le texte, requête exacte, termes dans titre/URL.
-- **build_tfidf_index** / **tfidf_score** : index TF-IDF de secours.
-- **is_result_relevant** / **looks_like_gibberish** / **analyze_query_clarity** : filtrage des requêtes et de la pertinence.
-
-### 3.7 Détection du type de requête
-
-- **detect_query_type** : renvoie notamment :
-  - `all_lines_summary` : « ligne » / « lignes » seul
-  - `line_X` : ligne spécifique (ex. ligne 7, ligne 16A, taf taf, terminus rufisque)
-  - `lines_to_stop` : question du type « quelle ligne pour X » / « aller à X »
-  - `lines_general` : question générale sur les lignes
-  - `other` : autre (général, contact, réservation, etc.)
-
-### 3.8 Endpoints Flask
-
-| Route | Méthode | Description |
-|-------|---------|-------------|
-| **/ask** | POST, OPTIONS | Question utilisateur → réponse structurée (answer, summary, bullets, sources, results, query_type, is_city_query, is_line_query, lines_summary, etc.) |
-| **/full_page/<path:url_encoded>** | GET | Récupération du contenu complet d’une page (pour affichage détaillé) |
-| **/health** | GET | Santé + nombre de documents indexés |
-| **/cities** | GET | Liste des villes connues (réseau interurbain) |
-
-### 3.9 Comportement de /ask (résumé)
-
-1. **Validation** : question absente, trop courte ou uniquement mots vides → message invitant à préciser.
-2. **Typo** : correction via `normalize_query_typos`.
-3. **Type** : `detect_query_type` + détection ville (`extract_city_from_query`).
-4. **Gibberish** : rejet avec message générique.
-5. **Clarification** : si besoin de précision (ex. question trop vague) → `needs_clarification` + `clarification_prompt`.
-6. **Réponses dédiées** :
-   - **Réservation** : texte fixe (app mobile, 33 824 10 10, guichets).
-   - **Assane Mbengue** : courte biographie (DG Dakar Dem Dikk).
-7. **Recherche** : `retrieve(q)` sur l’index.
-8. **Requête ville (interurbain)** :
-   - Si ville dans **interurbain_data** : réponse construite depuis `get_section_by_ville` + `build_structured_info_from_interurbain_list` + `format_structured_to_text`.
-   - Sinon : extraction depuis le texte scrapé (page interurbain).
-9. **Requête « toutes les lignes »** (`all_lines_summary`) : combinaison des segments de la page réseau urbain, `extract_line_summary` + `improve_line_extraction_with_categories`, renvoi de `lines_summary` et `categorized_lines`.
-10. **Requête « lignes vers un arrêt »** (`lines_to_stop`) : `find_lines_for_stop` sur le texte combiné ; si aucun résultat, fallback en requête générale.
-11. **Requête « ligne X »** (`line_X`) : combinaison des segments de la page lignes, `extract_complete_line_details` (départ, arrivée, liste d’arrêts), avec fallbacks (extract_stops_for_line, etc.).
-12. **Requête générale** : extraction ciblée (`extract_targeted_info`) ou contenu complet, snippet, sources.
-
-Réponses JSON incluent : `answer`, `summary`, `bullets`, `sources`, `results`, `needs_clarification`, `query_type`, `has_structured_data`, `is_city_query`, `is_line_query`, et selon le cas `lines_summary`, `categorized_lines`, `line_numbers`, `stop_requested`, `total_lines`, etc.
+**Important** : lancer **`python app.py`** (et en production **`gunicorn app:app`**) pour bénéficier du comportement complet documenté dans le README. Un démarrage direct sur l’ancien module seul peut omettre l’enrichissement.
 
 ---
 
-## 4. Données interurbain (interurbain_data.py)
+## 3. Structure des fichiers (principaux)
 
-- **INTERURBAIN_SECTIONS** : liste de sections (une entrée par ville ou groupe : Fatick, Podor/Ndioum, Kédougou, Louga/Kébémer, Diourbel, Thiès, Ourossogui/Matam, Mbour, Tambacounda, Saint-Louis, Kaolack, Ziguinchor, Vélingara, Touba, Kolda, Tivaouane, Bignona, Sédhiou, Bakel, Kaffrine, Kidira, etc.).
-- Chaque section contient : **titre**, **villes**, **prix** (chaîne ou dict pour plusieurs villes), **horaires**, **jours**, **depart**, **lieux_contact** (liste de {lieu, tel}).
-- **get_section_by_ville(ville)** : retourne la section correspondante ou None.
-- **get_prix_for_ville(ville)** : prix affiché pour la ville (gère Louga/Kébémer).
-- **get_contact_for_ville(ville)** : liste des lieux/contacts pour la ville (filtrage pour sections partagées).
+| Élément | Rôle |
+|---------|------|
+| `app.py` | Wrapper Flask : chargement dynamique de l’implémentation, LLM optionnel, fallbacks, routes d’administration technique (voir §6). |
+| `app_backup.py` | Routes `/ask`, `/health`, `/cities`, `/full_page`, logique RAG + urbain + interurbain. |
+| `lines_data.py` | Liste structurée des **lignes urbaines** (numéro, terminus, arrêts). |
+| `interurbain_data.py` | Sections **interurbaines** (villes, prix, horaires, contacts, etc.). |
+| `interurbain_fallback_sections.py` | Données de **secours** si la synchronisation / le parse interurbain échoue. |
+| `sync_interurbain.py` | Synchronisation / extraction depuis le site vers données ou snapshot (selon options de ligne de commande). |
+| `scraper.py` | Collecte de textes sur des URLs cibles → `data/scraped.jsonl`. |
+| `indexer.py` | Construction de `data/metadata.json` et `data/embeddings.npy`. |
+| `split_metadata.py` | Script optionnel de re-découpage des segments d’index (affiner la granularité). |
+| `ui.html`, `script.js`, `style.css` | Interface utilisateur (chat, affichage des types de réponse, saisie, **dictée** si le navigateur supporte l’API Web Speech). |
+| `static/` | Assets (ex. logo). |
+| `data/` | Fichiers générés (scrapé, métadonnées, embeddings, éventuel snapshot interurbain). |
+| `requirements.txt` | Dépendances Python. |
+| `README.md` | Installation, pipeline scrape → index, **automatisation** (rafraîchissement). |
+| `scripts/` | Scripts d’aide au déploiement / rafraîchissement (selon ce qui est versionné : shell, PowerShell, etc.). |
 
----
-
-## 5. Scraping et indexation
-
-- **scraper.py** : URLs fixes (info-voyageurs, services, presentation, contact, chatbot-2303) ; extraction du texte (balises `<p>` dans `main`/`article`, sinon fallback `get_text`) ; écriture en JSONL dans `data/scraped.jsonl`.
-- **indexer.py** : lecture de `scraped.jsonl`, découpage en chunks (CHUNK_SIZE=800, CHUNK_OVERLAP=200), encodage avec SentenceTransformer, sauvegarde `data/embeddings.npy` et `data/metadata.json`.
-- En production, les pages **reseau-urbain-dakar** et **reseau-interurbain** sont supposées présentes dans `metadata.json` (ajout manuel ou via un scraper étendu non présent dans le dépôt actuel).
-
----
-
-## 6. Interface utilisateur
-
-- **ui.html** : structure (header avec logo Dem Dikk, zone `#chat`, formulaire avec champ question et bouton Envoyer), liens vers `style.css` et `script.js`.
-- **script.js** : envoi POST vers `/ask`, affichage des réponses (résumé, bullets, sources, cartes lignes, boutons « Voir détails » par ligne), gestion des formules de politesse et d’aide, `askForLineDetails(lineNumber)` et `showAllLines()` pour les actions sur les lignes.
-- **style.css** : mise en forme de l’en-tête, du conteneur de chat et du formulaire (police Inter, responsive).
+Les noms exacts sous `scripts/` peuvent évoluer ; se référer au dépôt et au README section automation.
 
 ---
 
-## 7. Tests et scripts utilitaires
+## 4. Types de requêtes (`query_type`)
 
-- **test_ask.py**, **test_api.py** : tests de l’API `/ask`.
-- **test_interurbain.py** : données et logique interurbain.
-- **test_lines_to_stop.py**, **test_lines_stops.py** : lignes vers un arrêt et extraction d’arrêts.
-- **test_extract.py**, **test_line_extraction.py**, **test_line7.py**, **test_ligne4_debug.py** : extraction de lignes et arrêts.
-- **test_categorization*.py**, **test_categories.py**, **test_final_categorization.py** : catégorisation des lignes.
-- **test_validation_complete.py**, **test_specific_lines.py**, **test_real_data.py**, **test_debug*.py** : validation et debug.
-- **count_lines.py** : comptage des lignes dans les données.
-- **check_data.py** : recherche de pages contenant « reseau » ou « ligne » dans les métadonnées.
-- **examine_format.py** : inspection du format des données.
-- **split_metadata.py** : re-découpage fin de `metadata.json` (paragraphes/phrases, max 120 mots).
+Le backend classe la question pour adapter la réponse et le front. Exemples courants gérés dans `app_backup.py` :
 
----
+| `query_type` | Usage typique |
+|----------------|----------------|
+| `all_lines_summary` | Liste / réseau urbain global. |
+| `lines_to_stop` | Lignes desservant un **arrêt** ou un lieu (formulation explicite ou inférence sur un nom court). |
+| `line_details` | Détail d’une **ligne** (numéro, TAF TAF, etc.) : terminus, liste d’arrêts. |
+| `city_info` | **Ville** interurbaine reconnue. |
+| `general` | Réponse issue surtout de la **recherche dans l’index** (chunk du site). |
+| `other` | Aucun résultat satisfaisant dans le cœur ; **réponse de secours** (ex. orienter vers les canaux officiels). |
 
-## 8. Résumé des fonctionnalités livrées
-
-- Chatbot en français pour Dakar Dem Dikk (lignes, arrêts, villes, réservation, contact).
-- Recherche sémantique (embeddings) avec fallback TF-IDF et agrégation par URL.
-- Réponses dédiées : réservation, Assane Mbengue, clarification.
-- Requêtes par **ville** (interurbain) : prix, horaires, jours, départ, contacts (données de référence + extraction depuis le site).
-- Requêtes **lignes** : liste de toutes les lignes, détail d’une ligne (arrêts), lignes desservant un arrêt.
-- Gestion des variantes de lignes (TAF TAF, TAF TAF OUAKAM, TERMINUS RUFISQUE, 16A, etc.) et des variantes de villes (accents, orthographes).
-- Correction des fautes de frappe courantes dans la requête.
-- API REST : `/ask`, `/health`, `/cities`, `/full_page/<url>`.
-- Interface web avec chat, boutons « Lignes » et « Détails » par ligne.
+Le **wrapper** (`app.py`) peut ensuite reformuler une réponse déjà construite (LLM), sans changer le `query_type` dans tous les cas. Le front (`script.js`) reconnaît aussi des variantes comme **`line_summary_only`** lorsqu’elles apparaissent dans les réponses.
 
 ---
 
-*Document généré pour le projet Dakar Dem Dikk Chatbot — récapitulatif de l’existant.*
+## 5. Flux simplifié de `/ask`
+
+1. Réception JSON (`question`, éventuellement `city` ou autres champs selon le client).
+2. Normalisation légère des fautes / forme de la question (module cœur).
+3. Filtrage **hors sujet** / requêtes manifestement non transport (règles communes cœur + wrapper).
+4. Détection **ville interurbaine** → réponse structurée si correspondance.
+5. Détection **réseau urbain** : toutes les lignes, **une ligne**, **lignes à un arrêt** (données `lines_data.py` + règles de correspondance).
+6. Sinon **recherche** dans l’index (similarité ou secours mots-clés).
+7. Le **wrapper** peut enrichir le contexte (extraits page officielle, interurbain « Afrique », etc.) puis appeler le **LLM** pour reformuler **uniquement** à partir du contexte fourni (comportement décrit dans le code, pas reproduit ici mot pour mot).
+
+Les champs JSON habituels incluent : `answer`, `summary`, `sources`, `results`, `query_type`, drapeaux `is_city_query`, `is_line_query`, `has_structured_data`, et selon les cas `lines`, `lines_summary`, `stop_requested`, `line_details`, etc.
+
+---
+
+## 6. Routes HTTP (aperçu)
+
+**Cœur (`app_backup.py`)**  
+
+- `POST /ask` — question / réponse.  
+- `GET /health` — état du service et de l’index.  
+- `GET /cities` — villes interurbaines connues.  
+- `GET /full_page/...` — contenu d’une page encodée dans l’URL (usage interne / debug).  
+- `GET /` — racine (selon configuration).
+
+**Wrapper (`app.py`)** — en complément  
+
+- `GET /api/wrapper_ping` — diagnostic : vérifier que le wrapper est bien chargé en production.  
+- `POST /refresh_index` — relance pipeline type synchronisation interurbaine + scrape + indexation + rechargement des embeddings **en mémoire** (protégé par une **authentification côté serveur** via variable d’environnement ; détail volontairement non documenté ici).  
+- `POST /reload_embeddings` — rechargement disque → mémoire sans refaire tout le pipeline.
+
+Pour la configuration d’exploitation (noms des variables, en-têtes), se reporter au **code source** et au **README** sur une machine déjà configurée, sans les commiter dans la doc.
+
+---
+
+## 7. Interface utilisateur
+
+- **Responsive** : balise viewport + media queries dans `style.css` (petits écrans, tablettes).
+- **Micro** : dictée via **Web Speech API** si le navigateur l’expose ; sinon le bouton est désactivé (comportement prévu dans `script.js`).
+- **API** : l’URL de base peut être forcée en JavaScript pour les environnements où la page statique et l’API ne partagent pas le même hôte/port (voir commentaires dans `ui.html`).
+
+---
+
+## 8. Mise à jour des données et exploitation
+
+- Pipeline classique : **scraper** → **indexer** ; interurbain : script dédié selon README.
+- **Production** : après déploiement (`git pull`), **redémarrer ou recharger** le processus WSGI (ex. Gunicorn) pour prendre en compte le code Python ; les fichiers statiques peuvent être mis en cache par le navigateur (rechargement forcé utile).
+- **Automatisation** : décrite dans `README.md` (appels HTTP sécurisés ou scripts locaux selon l’environnement).
+
+---
+
+## 9. Évolution et maintenance de ce document
+
+- Ce fichier décrit l’**architecture actuelle** (module cœur + wrapper).  
+- En cas de refactor majeur, mettre à jour **ce document** et le **README** en parallèle.  
+- Ne pas y coller de **secrets** ni d’extraits de configuration de production.
+
+---
+
+*Documentation projet — niveau architecture / exploitation, sans secrets.*

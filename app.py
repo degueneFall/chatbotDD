@@ -95,6 +95,7 @@ _OFF_TOPIC_WORDS = frozenset([
     "politique", "president", "gouvernement", "election",
     "macky", "sall", "sonko", "wade",
     "football", "sport", "match",
+    "can", "caf", "copa", "mondial", "champions", "ligue", "nba", "rugby", "tennis",
     "barca", "barcelona", "barcelone",
     "messi", "ronaldo", "psg", "om", "ol", "liverpool", "chelsea", "arsenal",
     "cinema", "film", "serie", "musique",
@@ -184,7 +185,51 @@ def _init_deepseek():
     return _deepseek_cfg
 
 
-def _enhance_with_deepseek(original_data: dict, question: str) -> dict:
+def _parse_client_history(history_raw) -> list:
+    """
+    Normalise le champ JSON « history » (liste de {role, content}).
+    Retourne une liste de dicts valides ; vide si absent / invalide (rétrocompat).
+    """
+    if not history_raw or not isinstance(history_raw, list):
+        return []
+    out = []
+    for item in history_raw[-24:]:  # plafond de sécurité (~12 tours user+assistant)
+        if not isinstance(item, dict):
+            continue
+        role = (item.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        content = (item.get("content") or "").strip()
+        if not content:
+            continue
+        if len(content) > 4000:
+            content = content[:4000] + "…"
+        out.append({"role": role, "content": content})
+    return out
+
+
+def _format_client_history_for_prompt(entries: list) -> str:
+    """Bloc texte optionnel à injecter dans le prompt utilisateur envoyé au LLM."""
+    if not entries:
+        return ""
+    lines = []
+    for item in entries:
+        role = item.get("role") or ""
+        content = (item.get("content") or "").strip()
+        label = "Usager" if role == "user" else "Assistant"
+        if len(content) > 1200:
+            content = content[:1200] + "…"
+        lines.append(f"{label} : {content}")
+    if not lines:
+        return ""
+    return (
+        "Historique récent de la conversation (pour le fil du dialogue uniquement ; "
+        "ne pas en déduire de faits non repris dans les extraits du site ci-dessous) :\n"
+        + "\n".join(lines)
+    )
+
+
+def _enhance_with_deepseek(original_data: dict, question: str, client_history: list | None = None) -> dict:
     """
     Reformule la réponse du site de façon fluide avec DeepSeek.
     DeepSeek ne fait que réécrire — toutes les infos viennent du site.
@@ -269,14 +314,27 @@ def _enhance_with_deepseek(original_data: dict, question: str) -> dict:
     if not context or len(context) < 20:
         return original_data
 
-    user_prompt = (
-        f"Voici les informations trouvées sur le site de Dakar Dem Dikk :\n"
-        f"---\n{context}\n---\n\n"
-        f"Question de l'usager : {question}\n\n"
-        "Reformule ces informations en une réponse fluide et naturelle en français "
-        "(3 à 5 phrases). Utilise UNIQUEMENT ce qui est écrit ci-dessus. "
-        "Si l'information demandée n'est pas dans le texte ci-dessus, dis-le clairement."
-    )
+    history_block = _format_client_history_for_prompt(client_history or [])
+    if history_block:
+        user_prompt = (
+            f"{history_block}\n\n"
+            f"Voici les informations trouvées sur le site de Dakar Dem Dikk :\n"
+            f"---\n{context}\n---\n\n"
+            f"Question actuelle de l'usager : {question}\n\n"
+            "Reformule ces informations en une réponse fluide et naturelle en français "
+            "(3 à 5 phrases). Utilise UNIQUEMENT ce qui est écrit dans le bloc « site » ci-dessus "
+            "(pas d'invention ; l'historique ne constitue pas une source factuelle). "
+            "Si l'information demandée n'est pas dans le texte du site ci-dessus, dis-le clairement."
+        )
+    else:
+        user_prompt = (
+            f"Voici les informations trouvées sur le site de Dakar Dem Dikk :\n"
+            f"---\n{context}\n---\n\n"
+            f"Question de l'usager : {question}\n\n"
+            "Reformule ces informations en une réponse fluide et naturelle en français "
+            "(3 à 5 phrases). Utilise UNIQUEMENT ce qui est écrit ci-dessus. "
+            "Si l'information demandée n'est pas dans le texte ci-dessus, dis-le clairement."
+        )
 
     try:
         import requests as _requests
@@ -1655,6 +1713,10 @@ if _original_ask:
         # Récupérer la question avant l'appel original
         body = request.get_json(silent=True) or {}
         question = body.get("question", "")
+        if "history" in body:
+            client_history = _parse_client_history(body.get("history"))
+        else:
+            client_history = _parse_client_history(body.get("conversationHistory"))
         qn = _norm(question)
 
         # ── Détection hors-sujet / charabia (aligné sur app_backup) ───────────
@@ -1665,8 +1727,10 @@ if _original_ask:
             "carte", "colis", "horaire", "tarif", "prix", "contact", "agence",
             "interurbain", "touba", "thiès", "thies", "saint-louis", "fatick",
         )
+        _smalltalk = getattr(_mod, "_is_smalltalk_question", None)
         _off_topic_like = (
-            _question_looks_gibberish_normed(qn)
+            (_smalltalk and _smalltalk(question))
+            or _question_looks_gibberish_normed(qn)
             or (
                 _qwords & _OFF_TOPIC_WORDS
                 and not any(k in qn for k in _transport_ctx)
@@ -1714,7 +1778,7 @@ if _original_ask:
             wants_interurban = any(t in qn for t in interurban_triggers)
             fb_i = _fallback_interurban(question)
             if fb_i and wants_interurban:
-                enhanced = _enhance_with_deepseek(fb_i, question)
+                enhanced = _enhance_with_deepseek(fb_i, question, client_history)
                 return (jsonify(enhanced), *rest) if rest else jsonify(enhanced)
 
             # Afrique Dem Dikk : prioritaire pour "gambie/senegal/banjul/afrique"
@@ -1722,7 +1786,7 @@ if _original_ask:
             wants_afrique = any(t in qn for t in af_triggers)
             fb_a = _fallback_afrique_dem_dikk(question)
             if fb_a and wants_afrique:
-                enhanced = _enhance_with_deepseek(fb_a, question)
+                enhanced = _enhance_with_deepseek(fb_a, question, client_history)
                 return (jsonify(enhanced), *rest) if rest else jsonify(enhanced)
 
             ans = (data.get("answer") or "").strip()
@@ -1806,7 +1870,7 @@ if _original_ask:
             if any(k in qn for k in _site_triggers) and not rag_ok:
                 fb3 = _fallback_from_site(question)
                 if fb3:
-                    enhanced3 = _enhance_with_deepseek(fb3, question)
+                    enhanced3 = _enhance_with_deepseek(fb3, question, client_history)
                     return (jsonify(enhanced3), *rest) if rest else jsonify(enhanced3)
 
             # ── Recherche générique intelligente (smart search) ───────────────
@@ -1831,7 +1895,7 @@ if _original_ask:
                 if fb_smart and not rag_ok and (ans_seems_weak or smart_score >= 0.5):
                     return (jsonify(fb_smart), *rest) if rest else jsonify(fb_smart)
 
-            enhanced = _enhance_with_deepseek(data, question)
+            enhanced = _enhance_with_deepseek(data, question, client_history)
             # Logger les requêtes sans réponse
             if "je n'ai pas trouv" in (enhanced.get("answer") or "").lower():
                 _log_unknown_query(question, reason="not_found")

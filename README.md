@@ -80,3 +80,17 @@ The app can rebuild **interurbain snapshot**, **scraped pages**, and **vector in
 
 If Flask is already running and you only re-ran scrape/index on disk (without `/refresh_index`), call `POST /reload_embeddings` with the same bearer token, or restart the server. Interurban **Python** data (`interurbain_data.py`) is only refreshed in memory after a **process restart** unless you reload that module yourself.
 
+### 3. Linux server (cron + Gunicorn on `127.0.0.1:8000`)
+
+Ensure `REFRESH_TOKEN` is set in `.env` for the Gunicorn process (same as for manual API calls). Then schedule a nightly refresh (adjust paths and user):
+
+```bash
+chmod +x /var/www/dakar_dem_dikk_chatbot/scripts/refresh_index_curl.sh
+# Example crontab line (runs at 03:15):
+# 15 3 * * * export REFRESH_TOKEN='your-secret'; /var/www/dakar_dem_dikk_chatbot/scripts/refresh_index_curl.sh >>/var/log/chatbot_refresh.log 2>&1
+```
+
+Optional: `CHATBOT_REFRESH_URL=http://127.0.0.1:8000/reload_embeddings ./scripts/refresh_index_curl.sh` if you only rebuilt `metadata.json` / `embeddings.npy` on disk separately.
+
+After `sync_interurbain.py --write`, a full **Gunicorn restart** may still be needed for `interurbain_data.py` to reload in Python; `/refresh_index` documents this in its JSON `note` field.
+
