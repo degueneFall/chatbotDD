@@ -30,12 +30,11 @@
 
 body { 
   font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; 
-  max-width:1000px;
-  margin:0 auto;
-  color:#1f2937;
+  max-width: 1000px;
+  margin: 0 auto;
+  color: #1f2937;
   background: var(--bg-light);
-  line-height:1.6;
-  min-height: 100vh;
+  line-height: 1.6;
   padding: 0;
   position: relative;
 }
@@ -93,10 +92,11 @@ body::before {
   border-radius:16px;
   border:1px solid var(--list-border);
   padding:1.5rem;
-  height:65vh;
-  overflow:auto;
+  overflow-y:auto;
+  overflow-x:hidden;
   background:white;
   box-shadow: var(--shadow-md);
+  -webkit-overflow-scrolling: touch;
 }
 
 .bubble{ 
@@ -388,9 +388,8 @@ body::before {
   margin-left: 0.5rem;
 }
 
-form { 
-  margin-top:1.5rem;
-  padding: 0 2rem 2rem 2rem;
+form {
+  margin-top: 0;
 }
 
 .input-wrapper {
@@ -823,83 +822,48 @@ input[type=text]::placeholder {
   box-shadow: 0 2px 8px rgba(15, 118, 110, 0.25);
 }
 
-/* Responsive */
-@media (max-width: 768px) {
-  body {
-    margin:0;
-    padding:0;
-  }
-  
-  .header-container {
-    padding: 1.5rem 1rem;
-    border-radius: 0 0 20px 20px;
-  }
-  
-  .header-content {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 1rem;
-  }
-  
-  .logo-text h1 {
-    font-size: 1.5rem;
-  }
-  
-  .container {
-    padding: 0 1rem 1rem 1rem;
-  }
-  
-  #chat {
-    height:60vh;
-    padding:1.5rem;
-    border-radius: 16px;
-  }
-  
-  .bubble {
-    max-width:92%;
-    padding:14px 18px;
-  }
-  
-  .controls {
-    gap:8px;
-    flex-wrap: wrap;
-  }
-  
-  .small-btn {
-    font-size:0.85em;
-    padding:8px 14px;
-  }
-  
-  .input-wrapper {
-    flex-direction: column;
-    border-radius: 20px;
-    padding: 6px;
-  }
-  
-  input[type=text] {
-    border-radius: 20px;
-    padding: 14px 20px;
-  }
-  
-  .send-btn {
-    width: 100%;
-    border-radius: 20px;
-    padding: 14px;
-    justify-content: center;
-  }
-  
-  .lines-list {
-    grid-template-columns: 1fr;
-  }
-  
-  .line-main-route {
-    flex-direction: column;
-    gap: 12px;
-  }
-  
-  .line-arrow-big {
-    transform: rotate(90deg);
-  }
+/* ═══════════════════════════════════════════════════════
+   LAYOUT DE BASE — chat app plein-écran sur tous appareils
+   ═══════════════════════════════════════════════════════ */
+
+/* Empêche le scroll global : seul #chat scrolle */
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;           /* dynamic viewport height (gère le clavier virtuel) */
+  padding: 0;
+}
+
+.container {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+  min-height: 0;            /* indispensable pour que flex shrink fonctionne */
+}
+
+#chat {
+  flex: 1;
+  height: auto;             /* laisse le flex gérer la hauteur */
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Formulaire collé en bas, jamais caché par le clavier */
+form {
+  flex-shrink: 0;
+  margin-top: 0;
+  padding: 0.75rem 1.5rem 1rem;
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  background: var(--bg-light);
+  border-top: 1px solid rgba(21,175,151,0.10);
 }
 
 /* Scrollbar styling */
@@ -1144,16 +1108,7 @@ input[type=text]::placeholder {
     opacity: 0.7;
 }
 
-/* Responsive */
-@media (max-width: 768px) {
-    .lines-grid {
-        grid-template-columns: 1fr;
-    }
-    
-    .line-card {
-        padding: 12px;
-    }
-}
+/* (responsive lines-grid — géré dans la section unifiée ci-dessous) */
 
 /* Animation améliorée */
 .line-card {
@@ -1402,31 +1357,7 @@ input[type=text]::placeholder {
     margin-left: 8px;
 }
 
-/* Responsive */
-@media (max-width: 768px) {
-    .lines-grid-summary {
-        grid-template-columns: 1fr;
-    }
-    
-    .line-main-route {
-        flex-direction: column;
-        gap: 10px;
-    }
-    
-    .line-start-big, .line-end-big {
-        width: 100%;
-    }
-    
-    .stops-timeline {
-        padding-left: 20px;
-    }
-    
-    .stop-marker {
-        width: 24px;
-        height: 24px;
-        font-size: 0.9em;
-    }
-}
+/* (responsive lines-grid-summary — section unifiée en fin de fichier) */
 /* AJOUTER DANS style.css */
 .line-summary-card {
     min-height: 120px;
@@ -1605,16 +1536,7 @@ input[type=text]::placeholder {
     align-items: center;
 }
 
-/* Pour les téléphones */
-@media (max-width: 768px) {
-    .lines-grid-compact {
-        grid-template-columns: 1fr;
-    }
-    
-    .line-card-compact {
-        padding: 10px;
-    }
-}
+/* (responsive lines-grid-compact — section unifiée en fin de fichier) */
 /* AJOUTER AU STYLE EXISTANT */
 .line-detail-btn {
     background: linear-gradient(135deg, #0b5cff, #0950d6);
@@ -1802,37 +1724,7 @@ input[type=text]::placeholder {
     display: inline-block;
 }
 
-/* Responsive */
-@media (max-width: 768px) {
-    .line-main-route {
-        flex-direction: column;
-        gap: 10px;
-        padding: 15px;
-    }
-    
-    .line-start-big, .line-end-big {
-        width: 100%;
-        min-height: 50px;
-        font-size: 1.1em;
-    }
-    
-    .line-arrow-big {
-        transform: rotate(90deg);
-        margin: 10px 0;
-    }
-    
-    .line-item {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 10px;
-    }
-    
-    .line-detail-btn {
-        align-self: flex-end;
-        margin-left: 0;
-        margin-top: 10px;
-    }
-}
+/* (responsive line-main-route — section unifiée en fin de fichier) */
 /* Style amélioré pour les boutons de détails */
 .line-details-btn {
     background: linear-gradient(135deg, var(--bot), #0a6c3a);
@@ -2128,4 +2020,276 @@ input[type=text]::placeholder {
 }
 .line-chip:hover {
     color: #0d9488;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   RESPONSIVE UNIFIÉ — toutes les tailles d'écran
+   Couvre : tablette (≤ 900px), mobile (≤ 640px), petits mobiles (≤ 400px),
+            paysage phone, et safe-area (iPhone notch / barre de navigation)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Tablette (≤ 900px) ─────────────────────────────────────────── */
+@media (max-width: 900px) {
+  body {
+    max-width: 100%;
+  }
+
+  .container {
+    padding: 0.75rem;
+  }
+
+  form {
+    padding: 0.6rem 1rem 0.75rem;
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .input-wrapper {
+    padding: 6px 6px 6px 8px;
+  }
+
+  .lines-grid,
+  .lines-grid-summary,
+  .lines-grid-compact,
+  .lines-list {
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  }
+}
+
+/* ── Mobile (≤ 640px) ────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  /* Chat */
+  #chat {
+    padding: 0.85rem;
+    border-radius: 12px;
+    font-size: 0.95rem;
+  }
+
+  .bubble {
+    max-width: 90%;
+    padding: 12px 15px;
+    font-size: 0.95rem;
+    border-radius: 16px;
+  }
+
+  /* Bulles user : pas de dépassement à droite */
+  .user .bubble::before,
+  .bot .bubble::before {
+    display: none;
+  }
+
+  /* Formulaire : rangée unique horizontale compacte */
+  form {
+    padding: 0.5rem 0.65rem 0.6rem;
+    padding-bottom: calc(0.6rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .input-wrapper {
+    flex-direction: row;
+    gap: 8px;
+    border-radius: 999px;
+    padding: 5px 5px 5px 10px;
+  }
+
+  input[type=text] {
+    padding: 11px 10px;
+    font-size: 16px;  /* empêche le zoom automatique iOS */
+    min-width: 0;
+  }
+
+  .mic-btn {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+  }
+
+  .mic-icon {
+    width: 18px;
+    height: 18px;
+  }
+
+  .send-btn {
+    padding: 11px 18px;
+    font-size: 15px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+
+  /* Boutons d'actions */
+  .small-btn {
+    font-size: 0.82em;
+    padding: 8px 13px;
+    min-height: 36px;
+  }
+
+  .controls {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  /* Grilles de lignes */
+  .lines-grid,
+  .lines-grid-summary,
+  .lines-grid-compact,
+  .lines-list {
+    grid-template-columns: 1fr;
+  }
+
+  .line-card,
+  .line-card-compact {
+    padding: 12px;
+  }
+
+  /* Fiche ligne : terminus en colonne */
+  .line-main-route {
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+    margin: 14px 0;
+  }
+
+  .line-start-big,
+  .line-end-big {
+    width: 100%;
+    min-height: 48px;
+    font-size: 1em;
+    padding: 12px 16px;
+  }
+
+  .line-arrow-big {
+    font-size: 1.5em;
+    transform: rotate(90deg);
+    margin: 4px 0;
+    animation: none;    /* évite le glitch sur mobile */
+  }
+
+  /* Détail bouton / route */
+  .line-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .line-detail-btn {
+    align-self: stretch;
+    margin-left: 0;
+    margin-top: 8px;
+    text-align: center;
+  }
+
+  /* Timeline arrêts */
+  .stops-timeline {
+    padding-left: 22px;
+  }
+
+  .stop-marker {
+    width: 28px;
+    height: 28px;
+    font-size: 0.85em;
+    margin-right: 10px;
+  }
+
+  .stop-content {
+    padding: 12px;
+  }
+
+  /* Clarification */
+  .clarification-box-actions {
+    flex-direction: column;
+  }
+
+  .clarification-box-actions .small-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* Interurbain chips */
+  .interurbain-city-grid {
+    gap: 0.35rem;
+  }
+
+  .interurbain-city-chip {
+    font-size: 0.82rem;
+    padding: 0.4rem 0.75rem;
+  }
+}
+
+/* ── Petits mobiles (≤ 400px) ────────────────────────────────────── */
+@media (max-width: 400px) {
+  #chat {
+    padding: 0.65rem;
+    border-radius: 10px;
+  }
+
+  .bubble {
+    max-width: 95%;
+    padding: 10px 12px;
+    font-size: 0.9rem;
+  }
+
+  .send-btn .send-text {
+    display: none;          /* cache le label "Envoyer" pour gagner de la place */
+  }
+
+  /* Icône d'envoi seule : on affiche une flèche via CSS */
+  .send-btn::after {
+    content: "➤";
+    font-size: 1.1em;
+  }
+
+  .send-btn {
+    padding: 11px 14px;
+    min-width: 44px;
+  }
+
+  .small-btn {
+    font-size: 0.78em;
+    padding: 7px 11px;
+  }
+
+  .lines-container {
+    padding: 14px;
+    border-radius: 14px;
+  }
+
+  .line-details-container {
+    padding: 12px;
+  }
+}
+
+/* ── Paysage sur mobile (clavier virtuel très court) ─────────────── */
+@media (max-height: 500px) and (orientation: landscape) {
+  #chat {
+    border-radius: 8px;
+  }
+
+  form {
+    padding: 0.4rem 0.75rem;
+    padding-bottom: calc(0.4rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .input-wrapper {
+    padding: 4px 4px 4px 10px;
+  }
+
+  input[type=text] {
+    padding: 9px 10px;
+  }
+
+  .send-btn {
+    padding: 9px 16px;
+  }
+
+  .mic-btn {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+  }
+}
+
+/* ── Support safe-area (iPhone avec notch / Dynamic Island) ─────── */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  form {
+    padding-left:  max(0.65rem, env(safe-area-inset-left));
+    padding-right: max(0.65rem, env(safe-area-inset-right));
+  }
 }
