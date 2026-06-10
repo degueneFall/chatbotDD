@@ -15,6 +15,7 @@ import glob
 import time
 import functools
 import subprocess as _subprocess
+from flask import request, jsonify
 
 # Charger les variables d'environnement depuis .env (si présent)
 try:
@@ -128,16 +129,105 @@ _OFF_TOPIC_REPLY = (
 "Je ne suis malheureusement pas en mesure de répondre à cette question."
 )
 
-_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "unknown_queries.log")
+_LOG_FILE       = os.path.join(_root_dir, "unknown_queries.log")
+_UQ_DATA_DIR    = os.path.join(_root_dir, "data")
+_UQ_JSON_FILE   = os.path.join(_UQ_DATA_DIR, "unknown_queries.json")
+_uq_lock        = __import__("threading").Lock()
+
+
+def _uq_load() -> dict:
+    """Charge unknown_queries.json ; retourne la structure vide si absent/corrompu."""
+    try:
+        if os.path.exists(_UQ_JSON_FILE):
+            with open(_UQ_JSON_FILE, encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"queries": {}}
+
+
+def _uq_save(data: dict) -> None:
+    os.makedirs(_UQ_DATA_DIR, exist_ok=True)
+    tmp = _UQ_JSON_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _UQ_JSON_FILE)
+
+
+_UQ_STOPWORDS = frozenset({
+    # articles / prépositions / pronoms
+    "le","la","les","de","du","des","un","une","au","aux","en","et","est",
+    "que","qui","quoi","sur","par","pour","dans","avec","sans","vers","chez",
+    "je","il","elle","vous","nous","on","me","se","ce","si","ne","pas","plus",
+    # interrogatifs courants
+    "comment","quand","pourquoi","combien","quel","quelle","quels","quelles",
+    "ou","sont","avoir","etre",
+    # formules de politesse / fillers
+    "svp","stp","merci","bonjour","bonsoir","salut","ok","oui","non","voila",
+    "voudrais","veux","puis","peut","pouvez","faire","aller","savoir",
+    "dire","faut","besoin","aider","aide","souhait","souhaite",
+})
+
+
+def _uq_significant_words(question: str) -> tuple:
+    """
+    Extrait les mots « porteurs de sens » d'une question normalisée,
+    triés alphabétiquement — insensible à l'ordre des mots.
+    """
+    n = _norm(question)
+    words = [w for w in n.split()
+             if len(w) >= 3 and w not in _UQ_STOPWORDS]
+    return tuple(sorted(set(words)))
+
+
+def _uq_key(question: str) -> str:
+    """
+    Clé de dédoublonnage basée sur les mots significatifs triés.
+    """
+    sig = _uq_significant_words(question)
+    return " ".join(sig) if sig else _norm(question)[:80]
+
 
 def _log_unknown_query(question: str, reason: str = "not_found") -> None:
-    """Enregistre les requêtes sans réponse dans unknown_queries.log."""
+    """
+    Enregistre les requêtes sans réponse :
+      - unknown_queries.log  (texte brut, filet de sécurité)
+      - data/unknown_queries.json  (structuré, dédoublonné, via /admin/unknown-queries)
+    """
+    import datetime, hashlib
+    q = (question or "").strip()
+    if not q:
+        return
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # ── log texte brut ──────────────────────────────────────────────
     try:
-        import datetime
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        line = f"[{ts}] [{reason}] {question.strip()}\n"
         with open(_LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line)
+            f.write(f"[{ts}] [{reason}] {q}\n")
+    except Exception:
+        pass
+    # ── JSON structuré avec dédoublonnage ───────────────────────────
+    try:
+        key = _uq_key(q)
+        uid = hashlib.sha1(key.encode()).hexdigest()[:10]
+        with _uq_lock:
+            data = _uq_load()
+            queries = data.setdefault("queries", {})
+            if uid in queries:
+                queries[uid]["count"]    += 1
+                queries[uid]["last_seen"] = ts
+                queries[uid]["question"]  = q
+            else:
+                queries[uid] = {
+                    "id":         uid,
+                    "question":   q,
+                    "reason":     reason,
+                    "first_seen": ts,
+                    "last_seen":  ts,
+                    "count":      1,
+                    "handled":    False,
+                    "note":       "",
+                }
+            _uq_save(data)
     except Exception:
         pass
 
@@ -994,12 +1084,17 @@ def _fallback_from_site(question: str) -> dict | None:
     )
     wants_contact = (
         qn in ("contact", "contacts")
-        or ("contact service" in qn)
+        or ("contact" in qn)
+        or ("contacter" in qn)
+        or ("joindre" in qn)
+        or ("appeler" in qn)
+        or ("telephone" in qn)
+        or ("email" in qn)
         or ("service client" in qn)
-        or ("assistance" in qn and "contact" in qn)
+        or ("assistance" in qn)
         or ("horaire agence" in qn)
         or ("horaires agence" in qn)
-        or ("email" in qn and "dakar dem dikk" in qn)
+        or ("comment vous" in qn and any(k in qn for k in ("contact", "joindre", "appeler", "trouver", "ecrire")))
     )
     wants_objet_perdu = (
         ("objet perdu" in qn)
@@ -1035,9 +1130,12 @@ def _fallback_from_site(question: str) -> dict | None:
         or ("recrutement" in qn)
         or ("offres d emploi" in qn)
         or ("offre d emploi" in qn)
-        or ("travailler" in qn and "dakar dem dikk" in qn)
+        or ("travailler" in qn)
         or ("candidature" in qn)
-        or ("poste" in qn and "dakar dem dikk" in qn)
+        or ("postuler" in qn)
+        or ("poste" in qn)
+        or ("stage" in qn)
+        or ("cv" in qn and any(k in qn for k in ("envoyer", "deposer", "soumettre")))
     )
     wants_perturbation = (
         ("communication" in qn)
@@ -2048,6 +2146,272 @@ def reload_embeddings():
         })
     except Exception as e:
         return _jsonify({"error": str(e)}), 500
+
+
+# ── Admin : questions sans réponse ───────────────────────────────────────────
+
+_ADMIN_HTML = """<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin — Questions sans réponse</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#f4f6f9;color:#222}
+header{background:#d32f2f;color:#fff;padding:1rem 1.5rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
+header h1{font-size:1.2rem;flex:1}
+.btn-header{background:#fff;color:#d32f2f;border:none;border-radius:6px;padding:.45rem 1rem;cursor:pointer;font-weight:600;font-size:.9rem}
+.btn-header:hover{opacity:.85}
+.badge{background:#fff3;border-radius:12px;padding:.2rem .7rem;font-size:.85rem}
+main{padding:1.5rem;max-width:1100px;margin:auto}
+.filters{display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1rem;align-items:center}
+.filters input,.filters select{padding:.45rem .75rem;border:1px solid #ccc;border-radius:6px;font-size:.9rem}
+.filters label{font-size:.9rem;display:flex;align-items:center;gap:.4rem}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 4px #0001}
+th{background:#fafafa;padding:.75rem 1rem;text-align:left;font-size:.82rem;color:#555;border-bottom:2px solid #eee}
+td{padding:.7rem 1rem;border-bottom:1px solid #f0f0f0;font-size:.88rem;vertical-align:top}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#fafef0}
+.handled td{opacity:.5}
+.badge-count{background:#d32f2f;color:#fff;border-radius:10px;padding:.15rem .55rem;font-size:.8rem;font-weight:700}
+.btn-sm{padding:.3rem .7rem;border:none;border-radius:5px;cursor:pointer;font-size:.82rem;font-weight:600}
+.btn-handled{background:#43a047;color:#fff}
+.btn-handled:hover{background:#2e7d32}
+.note-input{width:100%;padding:.3rem .5rem;border:1px solid #ddd;border-radius:4px;font-size:.83rem}
+.empty{text-align:center;padding:3rem;color:#999}
+.group-block{background:#fff;border-radius:8px;box-shadow:0 1px 4px #0001;margin-bottom:1.2rem;overflow:hidden}
+.group-header{background:#ffebee;padding:.6rem 1rem;font-size:.85rem;font-weight:600;color:#c62828;display:flex;justify-content:space-between;align-items:center}
+.group-row{padding:.55rem 1rem;border-top:1px solid #f0f0f0;display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-start}
+.group-q{flex:1;font-size:.88rem}
+.group-meta{font-size:.78rem;color:#888;white-space:nowrap}
+.tabs{display:flex;gap:.5rem;margin-bottom:1rem}
+.tab{padding:.45rem 1.1rem;border:none;border-radius:6px 6px 0 0;cursor:pointer;font-size:.9rem;background:#ddd;color:#555}
+.tab.active{background:#d32f2f;color:#fff;font-weight:700}
+@media print{header .btn-header,header .filters,.tab{display:none}body{background:#fff}main{padding:0}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Questions sans réponse — Dakar Dem Dikk</h1>
+  <span class="badge" id="totalBadge">…</span>
+  <button class="btn-header" onclick="exportPDF()">⬇ PDF</button>
+  <button class="btn-header" onclick="location.reload()">↺ Actualiser</button>
+</header>
+<main>
+  <div class="filters">
+    <input type="text" id="searchInput" placeholder="Rechercher…" oninput="render()">
+    <select id="filterStatus" onchange="render()">
+      <option value="all">Tous</option>
+      <option value="pending">En attente</option>
+      <option value="handled">Traités</option>
+    </select>
+    <label><input type="checkbox" id="groupCheck" onchange="render()"> Regrouper les proches</label>
+  </div>
+  <div class="tabs">
+    <button class="tab active" id="tabGroups" onclick="switchTab('groups')">Groupes</button>
+    <button class="tab" id="tabTable" onclick="switchTab('table')">Tableau</button>
+  </div>
+  <div id="viewGroups"></div>
+  <div id="viewTable" style="display:none"></div>
+</main>
+<script>
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+let ALL = [];
+let currentTab = 'groups';
+
+function exportPDF(){ window.print(); }
+
+function switchTab(t){
+  currentTab = t;
+  document.getElementById('tabGroups').classList.toggle('active', t==='groups');
+  document.getElementById('tabTable').classList.toggle('active', t==='table');
+  document.getElementById('viewGroups').style.display = t==='groups' ? '' : 'none';
+  document.getElementById('viewTable').style.display  = t==='table'  ? '' : 'none';
+}
+
+const STOP = new Set(['le','la','les','de','du','des','un','une','au','aux','en','et','est',
+  'que','qui','quoi','sur','par','pour','dans','avec','sans','vers','chez',
+  'je','il','elle','vous','nous','on','me','se','ce','si','ne','pas','plus',
+  'comment','quand','pourquoi','combien','quel','quelle','ou','sont',
+  'svp','stp','merci','bonjour','bonsoir','salut','ok','oui','non',
+  'voudrais','veux','puis','peut','pouvez','faire','aller','savoir','faut','besoin','aide']);
+
+const ACRONYMS = {'ddd':'dakar dem dikk','tek dem':'tek dem','brt':'bus rapid transit'};
+
+function sigWords(q){
+  let s = q.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').replace(/[^a-z0-9 ]/g,' ');
+  for(const [k,v] of Object.entries(ACRONYMS)) s = s.replace(new RegExp('\\\\b'+k+'\\\\b','g'),v);
+  return new Set(s.split(/\\s+/).filter(w => w.length>=3 && !STOP.has(w)));
+}
+
+function similarity(a, b){
+  const sa = sigWords(a), sb = sigWords(b);
+  if(!sa.size && !sb.size) return 1;
+  const inter = [...sa].filter(w=>sb.has(w)).length;
+  const union = new Set([...sa,...sb]).size;
+  return union===0 ? 0 : inter/union;
+}
+
+async function loadData(){
+  const url = `/admin/unknown-queries/data?token=${encodeURIComponent(TOKEN)}`;
+  const r = await fetch(url);
+  if(!r.ok){ document.body.innerHTML = "<p style='padding:2rem;color:red'>Acc\\u00e8s refus\\u00e9 \\u2014 token manquant ou invalide.</p>"; return; }
+  const d = await r.json();
+  ALL = (d.queries || []).sort((a,b) => b.count - a.count);
+  document.getElementById('totalBadge').textContent = ALL.length + ' question(s)';
+  render();
+}
+
+function filtered(){
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  const st = document.getElementById('filterStatus').value;
+  return ALL.filter(r => {
+    if(st==='pending' && r.handled) return false;
+    if(st==='handled' && !r.handled) return false;
+    if(q && !r.question.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+function render(){
+  const rows = filtered();
+  const doGroup = document.getElementById('groupCheck').checked;
+  if(currentTab==='groups') renderGroups(rows, doGroup);
+  else renderTable(rows);
+}
+
+function renderGroups(rows, doGroup){
+  const el = document.getElementById('viewGroups');
+  if(!rows.length){ el.innerHTML='<p class="empty">Aucune question pour ces filtres.</p>'; return; }
+  let groups = [];
+  if(doGroup){
+    const used = new Array(rows.length).fill(false);
+    for(let i=0;i<rows.length;i++){
+      if(used[i]) continue;
+      const g = [rows[i]]; used[i]=true;
+      for(let j=i+1;j<rows.length;j++){
+        if(!used[j] && similarity(rows[i].question, rows[j].question)>=0.4){
+          g.push(rows[j]); used[j]=true;
+        }
+      }
+      groups.push(g);
+    }
+  } else {
+    groups = rows.map(r=>[r]);
+  }
+  el.innerHTML = groups.map(g => {
+    const total = g.reduce((s,r)=>s+r.count,0);
+    const label = g.length>1 ? `Groupe (${g.length} variantes, ${total} fois)` : `x${g[0].count}`;
+    const rows2 = g.map(r => `
+      <div class="group-row ${r.handled?'handled':''}">
+        <div class="group-q">${esc(r.question)}</div>
+        <div class="group-meta">${r.last_seen}<br>
+          <span class="badge-count">${r.count}</span>
+          ${!r.handled?`<button class="btn-sm btn-handled" onclick="markHandled('${r.id}',this)" style="margin-left:.4rem">✓ Traité</button>`:'<span style="color:#43a047;font-size:.8rem;margin-left:.4rem">✓</span>'}
+        </div>
+        <input class="note-input" placeholder="Note…" value="${esc(r.note||'')}" onblur="saveNote('${r.id}',this.value)" style="width:180px">
+      </div>`).join('');
+    return `<div class="group-block"><div class="group-header"><span>${esc(g[0].question)}</span><span>${label}</span></div>${rows2}</div>`;
+  }).join('');
+}
+
+function renderTable(rows){
+  const el = document.getElementById('viewTable');
+  if(!rows.length){ el.innerHTML='<p class="empty">Aucune question.</p>'; return; }
+  el.innerHTML = `<table>
+    <thead><tr><th>Question</th><th>Raison</th><th>Vu</th><th>Dernière fois</th><th>Note</th><th>Action</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr class="${r.handled?'handled':''}">
+      <td>${esc(r.question)}</td><td>${esc(r.reason)}</td>
+      <td><span class="badge-count">${r.count}</span></td>
+      <td>${r.last_seen}</td>
+      <td><input class="note-input" value="${esc(r.note||'')}" onblur="saveNote('${r.id}',this.value)"></td>
+      <td>${!r.handled?`<button class="btn-sm btn-handled" onclick="markHandled('${r.id}',this)">✓ Traité</button>`:'<em>ok</em>'}</td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function markHandled(id, btn){
+  await fetch(`/admin/unknown-queries/${id}/handled?token=${encodeURIComponent(TOKEN)}`,{method:'POST'});
+  const rec = ALL.find(r=>r.id===id);
+  if(rec) rec.handled = true;
+  render();
+}
+
+async function saveNote(id, note){
+  await fetch(`/admin/unknown-queries/${id}/note?token=${encodeURIComponent(TOKEN)}`,{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({note})
+  });
+  const rec = ALL.find(r=>r.id===id);
+  if(rec) rec.note = note;
+}
+
+loadData();
+</script>
+</body>
+</html>"""
+
+
+def _admin_check_token(req) -> bool:
+    expected = (os.environ.get("REFRESH_TOKEN") or "").strip()
+    if not expected:
+        return False
+    token = (
+        req.args.get("token")
+        or (req.get_json(silent=True) or {}).get("token")
+        or (req.headers.get("Authorization") or "")[7:]
+    ).strip()
+    return token == expected
+
+
+@app.route("/admin/unknown-queries", methods=["GET"])
+def admin_unknown_queries():
+    if not _admin_check_token(request):
+        return "Accès refusé — ajoutez ?token=VOTRE_REFRESH_TOKEN à l'URL.", 401
+    return _ADMIN_HTML, 200, {
+        "Content-Type":  "text/html; charset=utf-8",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma":        "no-cache",
+    }
+
+
+@app.route("/admin/unknown-queries/data", methods=["GET"])
+def admin_uq_data():
+    if not _admin_check_token(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    data = _uq_load()
+    return jsonify({"queries": list(data.get("queries", {}).values())})
+
+
+@app.route("/admin/unknown-queries/<uid>/handled", methods=["POST"])
+def admin_uq_mark_handled(uid: str):
+    if not _admin_check_token(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    with _uq_lock:
+        data = _uq_load()
+        q    = data.get("queries", {}).get(uid)
+        if not q:
+            return jsonify({"error": "not found"}), 404
+        q["handled"] = True
+        _uq_save(data)
+    return jsonify({"status": "ok", "id": uid, "handled": True})
+
+
+@app.route("/admin/unknown-queries/<uid>/note", methods=["POST"])
+def admin_uq_save_note(uid: str):
+    if not _admin_check_token(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    note = ((request.get_json(silent=True) or {}).get("note") or "").strip()[:500]
+    with _uq_lock:
+        data = _uq_load()
+        q    = data.get("queries", {}).get(uid)
+        if not q:
+            return jsonify({"error": "not found"}), 404
+        q["note"] = note
+        _uq_save(data)
+    return jsonify({"status": "ok"})
 
 
 # ── Point d'entrée (développement local) ─────────────────────────────────────

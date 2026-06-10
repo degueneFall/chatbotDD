@@ -294,68 +294,41 @@ body::before {
 }
 
 .list-container {
-  background: var(--list-bg);
-  border: 1px solid var(--list-border);
-  border-radius: 8px;
-  padding: 1rem;
-  margin: 12px 0;
+  margin: 6px 0;
   font-size: 0.95em;
 }
 
 .city-header {
-  font-size: 1.2em;
+  font-size: 1.1em;
   font-weight: 700;
   color: var(--ddd-primary);
-  margin-bottom: 0.75rem;
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 12px 16px;
-  background: linear-gradient(135deg, #f0faf8, #e6f5f2);
-  border-radius: 12px;
-  border-left: 4px solid var(--ddd-primary);
-  box-shadow: var(--shadow-sm);
-  animation: fadeInUp 0.4s ease-out;
+  margin: 0.6rem 0 0.3rem 0;
 }
 
 .section-title {
-  font-weight: 700;
+  font-weight: 600;
   color: var(--ddd-dark);
-  margin: 1.5rem 0 1rem 0;
-  font-size: 1em;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  padding: 10px 16px;
-  background: linear-gradient(135deg, #f0faf8, #e6f5f2);
-  border-radius: 10px;
-  border-left: 4px solid var(--ddd-primary);
-  display: inline-block;
+  margin: 0.8rem 0 0.3rem 0;
+  font-size: 0.95em;
 }
 
 .list-item {
-  margin: 0.75rem 0;
-  padding: 10px 16px 10px 2rem;
+  margin: 0.2rem 0;
+  padding: 0 0 0 1.2rem;
   position: relative;
-  line-height: 1.6;
-  background: white;
-  border-radius: 8px;
-  border-left: 3px solid var(--ddd-primary);
-  transition: all 0.3s ease;
+  line-height: 1.7;
 }
 
 .list-item:hover {
-  transform: translateX(4px);
-  box-shadow: var(--shadow-sm);
-  border-left-width: 4px;
+  color: var(--ddd-primary);
 }
 
 .list-item::before {
-  content: "▸";
+  content: "–";
   position: absolute;
-  left: 0.75rem;
+  left: 0;
   color: var(--ddd-primary);
   font-weight: bold;
-  font-size: 1.1em;
 }
 
 .price-tag {
