@@ -232,7 +232,9 @@ function isVagueQuestion(q) {
   const norm = normalizeFr(q)
   if (!norm) return true
   // Pays / marque liés au réseau interurbain : on envoie une question ciblée (pas de menu)
-  if (norm === 'senegal' || norm === 'gambie' || norm === 'gambia' || norm === 'senegal dem dikk' || norm === 'sengal dem dikk') return false
+  if (norm === 'senegal' || norm === 'gambie' || norm === 'gambia'
+      || norm === 'afrique dem dikk' || norm === 'afrique demdikk'
+      || norm === 'senegal dem dikk' || norm === 'sengal dem dikk') return false
   const words = norm.split(' ').filter(Boolean)
   if (words.length <= 1) {
     // Un seul mot : envoyer au backend par défaut (villes, « horaires », « touba », etc.).
@@ -244,7 +246,9 @@ function isVagueQuestion(q) {
     ])
     return ambiguousSingles.has(norm)
   }
-  if (words.length === 2 && (norm === 'dem dikk' || norm === 'dakar dem' || norm === 'dakar demdikk')) return true
+  if (words.length === 2 && (norm === 'dakar dem' || norm === 'dakar demdikk')) return true
+  // "dem dikk" seul → question de présentation, envoyer au backend
+  if (norm === 'dem dikk' || norm === 'dakar dem dikk') return false
   const vague = new Set([
     'dakar', 'ddd', 'demdikk', 'dem dikk',
     'voyager', 'voyage', 'transport', 'bus', 'application', 'appli', 'info', 'informations', 'aide'
@@ -255,7 +259,10 @@ function isVagueQuestion(q) {
   // Requêtes "marque/pays" sans intention (ex: "senegal dem dikk", "dakar dem dikk")
   const intentWords = [
     'horaire', 'horaires', 'prix', 'tarif', 'tarifs', 'reservation', 'réservation', 'reserver', 'réserver',
-    'billet', 'ticket', 'ligne', 'lignes', 'abonnement', 'abonnements', 'tek', 'colis', 'messagerie', 'contact'
+    'billet', 'ticket', 'ligne', 'lignes', 'abonnement', 'abonnements', 'tek', 'colis', 'messagerie', 'contact',
+    'adresse', 'localisation', 'localise', 'situe', 'trouve', 'siege', 'bureau',
+    'emploi', 'recrutement', 'postuler', 'stage',
+    'afrique', 'gambie', 'banjul', 'international'
   ]
   const hasIntent = intentWords.some(w => norm.includes(w))
   if (!hasIntent) {

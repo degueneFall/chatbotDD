@@ -135,8 +135,8 @@
       "question": "adresse",
       "reason": "not_found",
       "first_seen": "2026-06-10 12:13:19",
-      "last_seen": "2026-06-10 12:13:19",
-      "count": 1,
+      "last_seen": "2026-06-11 10:57:26",
+      "count": 4,
       "handled": false,
       "note": ""
     },
@@ -206,6 +206,56 @@
       "reason": "not_found",
       "first_seen": "2026-06-10 12:55:25",
       "last_seen": "2026-06-10 12:55:25",
+      "count": 1,
+      "handled": false,
+      "note": ""
+    },
+    "9352ee4da5": {
+      "id": "9352ee4da5",
+      "question": "et pour le prix?",
+      "reason": "not_found",
+      "first_seen": "2026-06-11 09:23:27",
+      "last_seen": "2026-06-11 09:23:27",
+      "count": 1,
+      "handled": false,
+      "note": ""
+    },
+    "8e1d08e5d5": {
+      "id": "8e1d08e5d5",
+      "question": "ou se trouve dem dikk",
+      "reason": "not_found",
+      "first_seen": "2026-06-11 09:35:38",
+      "last_seen": "2026-06-11 10:57:41",
+      "count": 5,
+      "handled": false,
+      "note": ""
+    },
+    "ef52156666": {
+      "id": "ef52156666",
+      "question": "ou se trouve demdikk",
+      "reason": "not_found",
+      "first_seen": "2026-06-11 10:37:07",
+      "last_seen": "2026-06-11 10:37:07",
+      "count": 1,
+      "handled": false,
+      "note": ""
+    },
+    "6d1f1ee85d": {
+      "id": "6d1f1ee85d",
+      "question": "adresse dem dikk",
+      "reason": "not_found",
+      "first_seen": "2026-06-11 11:22:37",
+      "last_seen": "2026-06-11 11:22:37",
+      "count": 1,
+      "handled": false,
+      "note": ""
+    },
+    "b3e2386795": {
+      "id": "b3e2386795",
+      "question": "dem dikk",
+      "reason": "not_found",
+      "first_seen": "2026-06-11 11:23:00",
+      "last_seen": "2026-06-11 11:23:00",
       "count": 1,
       "handled": false,
       "note": ""

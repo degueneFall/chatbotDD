@@ -81,13 +81,21 @@ _deepseek_cfg = None
 
 # Bloc de contact complet affiché quand l'information n'est pas trouvée
 _CONTACT_BLOCK = (
-    "Je n'ai pas trouvé cette information sur le site de Dakar Dem Dikk.\n"
-    "Vous pouvez les contacter directement :\n"
+    "Vous pouvez contacter Dakar Dem Dikk directement :\n"
     "– Téléphone : +221 33 824 10 10 / +221 33 865 15 55\n"
     "– Email : info@demdikk.sn / contact@demdikk.sn\n"
     "– Adresse : Km 4,5 Avenue Cheikh Anta Diop, dépôt Ouakam, Dakar\n"
     "– Horaires : Lundi – Vendredi, 08h – 17h\n"
     "– Site web : demdikk.sn"
+)
+
+_ADDRESS_BLOCK = (
+    "Le siège de Dakar Dem Dikk est situé au :\n"
+    "– Km 4,5 Avenue Cheikh Anta Diop, dépôt Ouakam, Dakar\n\n"
+    "Contacts :\n"
+    "– Téléphone : +221 33 824 10 10 / +221 33 865 15 55\n"
+    "– Email : info@demdikk.sn\n"
+    "– Horaires agence : Lundi – Vendredi, 08h – 17h"
 )
 
 # Mots-clés indiquant une question hors du périmètre DDD
@@ -1094,6 +1102,13 @@ def _fallback_from_site(question: str) -> dict | None:
         or ("assistance" in qn)
         or ("horaire agence" in qn)
         or ("horaires agence" in qn)
+        or ("adresse" in qn)
+        or ("se trouve" in qn)
+        or ("localise" in qn)
+        or ("localisation" in qn)
+        or ("situe" in qn)
+        or ("siege" in qn)
+        or ("bureau" in qn and any(k in qn for k in ("dem dikk", "ddd", "dakar")))
         or ("comment vous" in qn and any(k in qn for k in ("contact", "joindre", "appeler", "trouver", "ecrire")))
     )
     wants_objet_perdu = (
@@ -1123,7 +1138,8 @@ def _fallback_from_site(question: str) -> dict | None:
         or ("fondation" in qn)
         or ("assane" in qn)
         or ("thierno" in qn)
-        or qn in ("ddd", "dakar dem dikk", "qui sommes nous", "qui etes vous")
+        or qn in ("ddd", "dem dikk", "dakar dem dikk", "qui sommes nous", "qui etes vous",
+                  "c est quoi dem dikk", "c est quoi dakar dem dikk", "kesako dem dikk")
     )
     wants_emploi = (
         ("emploi" in qn)
@@ -1373,6 +1389,13 @@ def _fallback_from_site(question: str) -> dict | None:
             return _make_chatbot_result(section)
 
     if wants_contact:
+        # Question spécifiquement sur l'adresse/localisation → réponse directe
+        wants_address_only = any(k in qn for k in (
+            "adresse", "se trouve", "localise", "localisation", "situe", "siege", "ou etes vous"
+        ))
+        if wants_address_only:
+            return _make_chatbot_result(_ADDRESS_BLOCK)
+
         section = _extract_section(
             page_text,
             (

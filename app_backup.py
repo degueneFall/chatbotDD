@@ -594,6 +594,50 @@ def _search(query: str, top_k: int = 5) -> list:
     return results
 
 
+def _deepseek_is_followup(context_summary: str, new_question: str) -> bool | None:
+    """
+    Demande à DeepSeek si `new_question` est une suite de `context_summary`.
+    Retourne True/False, ou None si DeepSeek est indisponible (fallback keywords).
+    Timeout court (4 s) pour ne pas ralentir le chatbot.
+    """
+    try:
+        import urllib.request as _ur, json as _json
+        api_key  = (os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+        base_url = (os.environ.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").rstrip("/")
+        model    = (os.environ.get("DEEPSEEK_MODEL") or "deepseek-chat").strip()
+        if not api_key:
+            return None
+
+        prompt = (
+            f"Contexte de la conversation précédente : « {context_summary} »\n"
+            f"Nouvelle question de l'utilisateur : « {new_question} »\n\n"
+            "Est-ce que la nouvelle question est une suite ou une clarification "
+            "directe du contexte précédent (même sujet, même destination, même ligne) ?\n"
+            "Réponds UNIQUEMENT par OUI ou NON, sans aucune explication."
+        )
+        payload = _json.dumps({
+            "model": model,
+            "max_tokens": 5,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode()
+        req = _ur.Request(
+            f"{base_url}/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        with _ur.urlopen(req, timeout=4) as resp:
+            body = _json.loads(resp.read())
+        answer = (body["choices"][0]["message"]["content"] or "").strip().upper()
+        return answer.startswith("OUI")
+    except Exception:
+        return None  # fallback sur les mots-clés
+
+
 def _question_significant_word_count(question: str) -> int:
     """Nombre de tokens « utiles » (évite que « ? » compte comme un 4ᵉ mot)."""
     parts = (question or "").strip().split()
@@ -672,13 +716,27 @@ def _city_token_for_enrichment(section: dict) -> str:
     return tit.split()[0] if tit else "ville"
 
 
+_ENRICH_STOPWORDS = frozenset({
+    "et","pour","le","la","les","de","du","des","un","une","au","aux",
+    "en","sur","par","ce","qui","que","quoi","quel","quelle","quels",
+    "quelles","il","elle","ils","elles","je","tu","nous","vous","on",
+    "ne","pas","plus","est","sont","a","y","en","or","ni","mais","donc",
+    "comment","combien","quand","pourquoi","ou",
+})
+
+
 def _enrich_short_question_from_history(question: str, history_raw) -> str:
     """
-    Résolution de contexte : question courte (< 4 mots) + historique avec ville ou ligne récente
-    → enrichir avant city_info / line_X / RAG.
+    Résolution de contexte : question courte (mots significatifs < 3) +
+    historique avec ville ou ligne récente → enrichir avant city_info / line_X / RAG.
     """
     q = (question or "").strip()
-    if not q or _question_significant_word_count(q) >= 4:
+    if not q:
+        return q
+    # Compter uniquement les mots porteurs de sens (hors stopwords)
+    qn_words = _norm(q).split()
+    meaningful = [w for w in qn_words if len(w) >= 2 and w not in _ENRICH_STOPWORDS]
+    if len(meaningful) >= 3:
         return q
     if _is_smalltalk_question(q):
         return q
@@ -695,42 +753,55 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
         return q
 
     qn = _norm(q)
-    # Suivi pronominal : « elle part d'où » après une fiche ligne dans l'historique
-    if line_num and re.match(
-        r"^\s*(elle|il|celle|celui|ça|ce)\b",
-        q,
-        re.IGNORECASE,
-    ):
+
+    # Suivi pronominal direct : « elle part d'où » → rattacher immédiatement
+    if line_num and re.match(r"^\s*(elle|il|celle|celui|ça|ce)\b", q, re.IGNORECASE):
         return f"ligne {line_num} {q}".strip()
 
-    priceish = any(
-        w in qn
-        for w in (
-            "prix", "tarif", "cout", "fcfa", "coute", "combien", "cher", "pay", "paye",
-            "horaire", "depart", "contact", "billet", "reservation",
-        )
-    )
-    lineish = any(
-        w in qn
-        for w in (
-            "ligne", "arret", "arrets", "station", "terminus", "bus", "arrets",
-            "arret", "dessert", "desservent",
-        )
-    )
-
-    if city_sec and line_num:
-        if priceish and not lineish:
-            return f"{_city_token_for_enrichment(city_sec)} {q}".strip()
-        if lineish and not priceish:
-            return f"ligne {line_num} {q}".strip()
-        return f"{_city_token_for_enrichment(city_sec)} ligne {line_num} {q}".strip()
+    # ── Résolution intelligente via DeepSeek ─────────────────────────────────
+    # On construit un résumé du contexte pour DeepSeek
+    ctx_parts = []
     if city_sec:
-        return f"{_city_token_for_enrichment(city_sec)} {q}".strip()
+        ctx_parts.append(f"destination {_city_token_for_enrichment(city_sec)}")
     if line_num:
-        # N'enrichir avec le numéro de ligne que si la question est vraiment
-        # liée à une ligne (prix, horaire, arrêts…), pas pour un nom d'arrêt isolé
-        if priceish or lineish:
+        ctx_parts.append(f"ligne {line_num}")
+    context_summary = ", ".join(ctx_parts)
+
+    is_followup = _deepseek_is_followup(context_summary, q)
+
+    if is_followup is True:
+        # DeepSeek confirme que c'est une suite → enrichir
+        if city_sec and line_num:
+            return f"{_city_token_for_enrichment(city_sec)} ligne {line_num} {q}".strip()
+        if city_sec:
+            return f"{_city_token_for_enrichment(city_sec)} {q}".strip()
+        if line_num:
             return f"ligne {line_num} {q}".strip()
+
+    elif is_followup is False:
+        # DeepSeek confirme que c'est une question indépendante → pas d'enrichissement
+        return q
+
+    else:
+        # DeepSeek indisponible → fallback sur les mots-clés
+        priceish = any(w in qn for w in (
+            "prix", "tarif", "cout", "fcfa", "coute", "combien", "cher", "paye",
+            "horaire", "depart", "billet", "reservation",
+        ))
+        lineish = any(w in qn for w in (
+            "ligne", "arret", "station", "terminus", "bus", "dessert", "desservent",
+        ))
+        if city_sec and line_num:
+            if priceish and not lineish:
+                return f"{_city_token_for_enrichment(city_sec)} {q}".strip()
+            if lineish and not priceish:
+                return f"ligne {line_num} {q}".strip()
+            return f"{_city_token_for_enrichment(city_sec)} ligne {line_num} {q}".strip()
+        if city_sec:
+            return f"{_city_token_for_enrichment(city_sec)} {q}".strip()
+        if line_num and (priceish or lineish):
+            return f"ligne {line_num} {q}".strip()
+
     return q
 
 
