@@ -1845,10 +1845,6 @@ if _original_ask:
                 "needs_clarification": False,
                 "show_more_info": False,
             }
-            _log_unknown_query(
-                question,
-                reason="gibberish" if _question_looks_gibberish_normed(qn) else "off_topic",
-            )
             return jsonify(_off)
 
         # Appeler le handler original
