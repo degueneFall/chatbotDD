@@ -727,7 +727,10 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
     if city_sec:
         return f"{_city_token_for_enrichment(city_sec)} {q}".strip()
     if line_num:
-        return f"ligne {line_num} {q}".strip()
+        # N'enrichir avec le numéro de ligne que si la question est vraiment
+        # liée à une ligne (prix, horaire, arrêts…), pas pour un nom d'arrêt isolé
+        if priceish or lineish:
+            return f"ligne {line_num} {q}".strip()
     return q
 
 
