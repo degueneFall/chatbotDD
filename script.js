@@ -1396,12 +1396,9 @@ form.addEventListener('submit', async (e)=>{
       const fullText = json.answer || result.full_text || json.summary || ''
       const isCityQuery = json.is_city_query || false
       
-      // Détecter si c'est une recherche de lignes (ancienne méthode)
-      const isLineQuery = currentQuestion.includes('ligne') || 
-                         currentQuestion.includes('lignes') || 
-                         currentQuestion.includes('bus') || 
-                         currentQuestion.includes('transport') ||
-                         currentQuestion.includes('réseau')
+      // Détecter si c'est une recherche de lignes (ancienne méthode) — mots entiers uniquement
+      const _lineWords = /\b(ligne|lignes|bus|transport|réseau)\b/i
+      const isLineQuery = json.is_line_query || _lineWords.test(currentQuestion)
       
       // Nettoyer le contenu parasite (navigation/header du site)
       const cleanAnswer = stripNavContent(fullText || snippet)
