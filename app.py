@@ -245,26 +245,24 @@ def _log_unknown_query(question: str, reason: str = "not_found") -> None:
         pass
 
 _LLM_SYSTEM = (
-    "Tu es l'assistant officiel de Dakar Dem Dikk. "
-    "Tu réponds directement aux questions des usagers, à la première personne, de façon fluide et naturelle. "
+    "Tu es l'assistant de Dakar Dem Dikk. "
+    "Ton UNIQUE rôle est de reformuler en français fluide et naturel "
+    "les informations que le système t'a déjà trouvées sur le site de Dakar Dem Dikk. "
     "RÈGLES ABSOLUES : "
     "1. Tu ne peux utiliser QUE les informations du contexte fourni — jamais d'inventions. "
-    "2. Ne dis JAMAIS 'd'après le site', 'le site mentionne', 'selon le site', 'les informations disponibles indiquent', "
-    "'d'après les informations disponibles', 'le site précise', ou toute formule qui cite une source externe. "
-    "Parle directement, comme si tu connaissais toi-même la réponse. "
-    "3. Si le contexte contient la réponse, exprime-la directement et naturellement. "
-    "4. Si le contexte ne contient pas la réponse, réponds EXACTEMENT ce texte "
+    "2. Si le contexte contient la réponse, reformule-la de façon fluide et agréable à lire. "
+    "3. Si le contexte ne contient pas la réponse à la question, réponds EXACTEMENT ce texte "
     "(sans rien ajouter ni modifier) : "
-    "'Cette information n\\'est pas disponible pour le moment.\\n"
-    "Vous pouvez nous contacter directement :\\n"
+    "'Je n\\'ai pas trouvé cette information sur le site de Dakar Dem Dikk.\\n"
+    "Vous pouvez les contacter directement :\\n"
     "– Téléphone : +221 33 824 10 10 / +221 33 865 15 55\\n"
     "– Email : info@demdikk.sn / contact@demdikk.sn\\n"
     "– Adresse : Km 4,5 Avenue Cheikh Anta Diop, dépôt Ouakam, Dakar\\n"
     "– Horaires : Lundi – Vendredi, 08h – 17h\\n"
     "– Site web : demdikk.sn' "
-    "5. Ne complète jamais avec tes propres connaissances générales. "
-    "6. Réponds toujours en français, jamais en anglais. "
-    "7. N'utilise JAMAIS de balises markdown comme ##, ###, **. Écris en texte clair avec des tirets (–) pour les listes."
+    "4. Ne complète jamais avec tes propres connaissances. "
+    "5. Réponds toujours en français, jamais en anglais. "
+    "6. N'utilise JAMAIS de balises markdown comme ##, ###, **. Écris en texte clair avec des tirets (–) pour les listes."
 )
 
 def _init_deepseek():
@@ -423,19 +421,22 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
     if history_block:
         user_prompt = (
             f"{history_block}\n\n"
-            f"Contexte :\n---\n{context}\n---\n\n"
-            f"Question : {question}\n\n"
-            "Réponds directement et naturellement en français en te basant UNIQUEMENT sur le contexte ci-dessus. "
-            "Ne cite pas le contexte, ne mentionne pas de source. "
-            "Si la réponse n'est pas dans le contexte, utilise le texte de réponse par défaut indiqué dans tes instructions."
+            f"Voici les informations trouvées sur le site de Dakar Dem Dikk :\n"
+            f"---\n{context}\n---\n\n"
+            f"Question actuelle de l'usager : {question}\n\n"
+            "Reformule ces informations en une réponse fluide et naturelle en français "
+            "(3 à 5 phrases). Utilise UNIQUEMENT ce qui est écrit dans le bloc « site » ci-dessus "
+            "(pas d'invention ; l'historique ne constitue pas une source factuelle). "
+            "Si l'information demandée n'est pas dans le texte du site ci-dessus, dis-le clairement."
         )
     else:
         user_prompt = (
-            f"Contexte :\n---\n{context}\n---\n\n"
-            f"Question : {question}\n\n"
-            "Réponds directement et naturellement en français en te basant UNIQUEMENT sur le contexte ci-dessus. "
-            "Ne cite pas le contexte, ne mentionne pas de source. "
-            "Si la réponse n'est pas dans le contexte, utilise le texte de réponse par défaut indiqué dans tes instructions."
+            f"Voici les informations trouvées sur le site de Dakar Dem Dikk :\n"
+            f"---\n{context}\n---\n\n"
+            f"Question de l'usager : {question}\n\n"
+            "Reformule ces informations en une réponse fluide et naturelle en français "
+            "(3 à 5 phrases). Utilise UNIQUEMENT ce qui est écrit ci-dessus. "
+            "Si l'information demandée n'est pas dans le texte ci-dessus, dis-le clairement."
         )
 
     try:

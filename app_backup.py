@@ -36,8 +36,8 @@ except ImportError:
 
 # Bloc de contact (identique à app.py `_CONTACT_BLOCK`) — réponse quand rien n’est trouvé dans l’index
 _CONTACT_NOT_FOUND_BLOCK = (
-    "Cette information n'est pas disponible pour le moment.\n"
-    "Vous pouvez nous contacter directement :\n"
+    "Je n'ai pas trouvé cette information sur le site de Dakar Dem Dikk.\n"
+    "Vous pouvez les contacter directement :\n"
     "– Téléphone : +221 33 824 10 10 / +221 33 865 15 55\n"
     "– Email : info@demdikk.sn / contact@demdikk.sn\n"
     "– Adresse : Km 4,5 Avenue Cheikh Anta Diop, dépôt Ouakam, Dakar\n"
@@ -1019,7 +1019,7 @@ def ask():
     # ── 6. Fallback (le wrapper app.py peut encore enrichir / reformuler) ─────
     return jsonify({
         "answer":   _CONTACT_NOT_FOUND_BLOCK,
-        "summary":  "Cette information n'est pas disponible pour le moment.",
+        "summary":  "Je n'ai pas trouvé cette information sur le site de Dakar Dem Dikk.",
         "sources":  [{"title": "Dakar Dem Dikk — Contact", "url": "https://demdikk.sn/", "score": 0}],
         "results":  [],
         "query_type": "other",
