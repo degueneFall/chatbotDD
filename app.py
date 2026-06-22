@@ -1962,6 +1962,107 @@ def lookup_resolved_query(question: str) -> dict | None:
     return None
 
 
+# ── Webhook : mise à jour automatique depuis WordPress ───────────────────────
+
+_webhook_lock = __import__("threading").Lock()
+_webhook_running = False
+
+
+@app.route("/webhook/content-updated", methods=["POST"])
+def webhook_content_updated():
+    """
+    Appelé automatiquement par le plugin WordPress à chaque modification
+    de page ou d'article publié.
+    Lance scraper.py + indexer.py + rechargement des embeddings en arrière-plan.
+    """
+    if not _admin_check_token(request):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    global _webhook_running
+    with _webhook_lock:
+        if _webhook_running:
+            return jsonify({"status": "already_running",
+                            "message": "Pipeline déjà en cours, ignoré."}), 202
+
+        _webhook_running = True
+
+    import threading
+
+    def _run_pipeline():
+        global _webhook_running
+        try:
+            import subprocess, sys as _sys
+            python = _sys.executable
+            root   = _root_dir
+            import datetime
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            log_path = os.path.join(root, "webhook_refresh.log")
+
+            def _log(msg):
+                try:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"[{ts}] {msg}\n")
+                except Exception:
+                    pass
+
+            _log("=== Webhook reçu — pipeline démarré ===")
+
+            # 1. Scraper
+            r1 = subprocess.run(
+                [python, "scraper.py"], cwd=root,
+                capture_output=True, text=True, timeout=180,
+            )
+            _log(f"scraper.py exit={r1.returncode} {r1.stdout.strip()[-300:]}")
+
+            # 2. Indexer
+            r2 = subprocess.run(
+                [python, "indexer.py"], cwd=root,
+                capture_output=True, text=True, timeout=600,
+            )
+            _log(f"indexer.py exit={r2.returncode} {r2.stdout.strip()[-300:]}")
+
+            # 3. Recharger les embeddings en mémoire
+            _mod = __import__("sys").modules.get("app_backup")
+            if _mod and hasattr(_mod, "_load_embeddings"):
+                _mod._load_embeddings()
+                _log("Embeddings rechargés en mémoire.")
+            elif _mod and hasattr(_mod, "load_model"):
+                _mod.load_model()
+                _log("Modèle rechargé.")
+
+            _log("=== Pipeline terminé ===")
+
+        except Exception as e:
+            try:
+                log_path = os.path.join(_root_dir, "webhook_refresh.log")
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[ERREUR] {e}\n")
+            except Exception:
+                pass
+        finally:
+            global _webhook_running
+            _webhook_running = False
+
+    threading.Thread(target=_run_pipeline, daemon=True).start()
+
+    post_info = (request.get_json(silent=True) or {})
+    return jsonify({
+        "status":  "rebuilding",
+        "message": "Pipeline lancé en arrière-plan (scrape + index + reload).",
+        "post_id": post_info.get("post_id"),
+        "log":     "webhook_refresh.log",
+    }), 202
+
+
+@app.route("/webhook/status", methods=["GET"])
+def webhook_status():
+    """Indique si un pipeline est en cours d'exécution."""
+    if not _admin_check_token(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    return jsonify({"running": _webhook_running})
+
+
 # ── Point d'entrée (développement local) ─────────────────────────────────────
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))

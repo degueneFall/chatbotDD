@@ -247,3 +247,49 @@ add_action('wp_ajax_ddd_inject_qa', function () {
 
     wp_send_json_success(['page_url' => get_permalink($page_id)]);
 });
+
+// ── Webhook : notifier le chatbot à chaque publication/modification ────────────
+
+/**
+ * Envoi asynchrone (non-bloquant) du webhook vers Flask.
+ * Déclenché à chaque fois qu'un article/page passe en statut "publish".
+ */
+add_action('save_post', function ($post_id, $post, $update) {
+    // Ignorer les autosaves et les révisions
+    if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
+    if (wp_is_post_revision($post_id))               return;
+    if ($post->post_status !== 'publish')            return;
+
+    // Types de contenus à surveiller
+    $watched = ['post', 'page'];
+    if (!in_array($post->post_type, $watched, true)) return;
+
+    $api_base = rtrim(DDD_CHATBOT_API_BASE, '/');
+    $token    = DDD_CHATBOT_TOKEN;
+    $url      = $api_base . '/webhook/content-updated';
+
+    $payload = wp_json_encode([
+        'post_id'   => $post_id,
+        'post_type' => $post->post_type,
+        'post_title'=> $post->post_title,
+        'token'     => $token,
+    ]);
+
+    // wp_remote_post en mode non-bloquant (blocking=false)
+    wp_remote_post($url, [
+        'method'    => 'POST',
+        'timeout'   => 1,        // On n'attend pas la réponse
+        'blocking'  => false,    // Non-bloquant → n'impacte pas le temps de sauvegarde
+        'headers'   => [
+            'Content-Type'  => 'application/json',
+            'Authorization' => 'Bearer ' . $token,
+        ],
+        'body'      => $payload,
+    ]);
+
+    // Log local WordPress (visible dans Outils > Santé du site si WP_DEBUG_LOG actif)
+    if (defined('WP_DEBUG') && WP_DEBUG) {
+        error_log('[DDD Chatbot] Webhook envoyé pour post_id=' . $post_id);
+    }
+
+}, 10, 3);
