@@ -25,6 +25,9 @@ unknown_queries.log
 # Données / backups locaux volumineux (régénérables : scraper + indexer)
 data/metadata_backup_*.json
 
+# Données runtime (générées par l'app, ne pas versionner)
+data/unknown_queries.json
+
 # IDE
 .idea/
 .vscode/

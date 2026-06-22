@@ -836,6 +836,51 @@ def ask():
     if _is_off_topic_question(question):
         return jsonify(_json_off_topic())
 
+    # ── 0. Lookup base de connaissances résolue (questions déjà traitées) ────
+    try:
+        import importlib as _imp
+        _app_mod = _imp.import_module("app") if "app" in sys.modules else None
+        if _app_mod is None:
+            import sys as _sys
+            _app_mod = _sys.modules.get("app")
+        _lookup_fn = getattr(_app_mod, "lookup_resolved_query", None) if _app_mod else None
+        if _lookup_fn:
+            _resolved = _lookup_fn(question)
+            if _resolved:
+                if _resolved.get("status") == "repondu" and _resolved.get("reponse_text"):
+                    return jsonify({
+                        "answer":      _resolved["reponse_text"],
+                        "summary":     _resolved["reponse_text"][:200],
+                        "sources":     [{"title": "Base de connaissances DDD",
+                                         "url": _resolved.get("page_cible_url") or "https://demdikk.sn",
+                                         "score": 1.0}],
+                        "results":     [],
+                        "query_type":  "general",
+                        "has_structured_data": False,
+                        "is_city_query": False,
+                        "is_line_query": False,
+                        "needs_clarification": False,
+                        "show_more_info": bool(_resolved.get("page_cible_url")),
+                    })
+                elif _resolved.get("status") == "redirige" and _resolved.get("page_cible_url"):
+                    _url  = _resolved["page_cible_url"]
+                    _ans  = (f"Pour cette question, consultez la page dédiée sur notre site :\n"
+                             f"→ {_url}")
+                    return jsonify({
+                        "answer":      _ans,
+                        "summary":     _ans,
+                        "sources":     [{"title": "Dakar Dem Dikk", "url": _url, "score": 1.0}],
+                        "results":     [],
+                        "query_type":  "general",
+                        "has_structured_data": False,
+                        "is_city_query": False,
+                        "is_line_query": False,
+                        "needs_clarification": False,
+                        "show_more_info": True,
+                    })
+    except Exception:
+        pass  # Ne jamais bloquer sur le lookup
+
     qtype = detect_query_type(question)
     lines_stop_explicit = qtype == "lines_to_stop"
 

@@ -226,14 +226,19 @@ def _log_unknown_query(question: str, reason: str = "not_found") -> None:
                 queries[uid]["question"]  = q
             else:
                 queries[uid] = {
-                    "id":         uid,
-                    "question":   q,
-                    "reason":     reason,
-                    "first_seen": ts,
-                    "last_seen":  ts,
-                    "count":      1,
-                    "handled":    False,
-                    "note":       "",
+                    "id":           uid,
+                    "question":     q,
+                    "reason":       reason,
+                    "first_seen":   ts,
+                    "last_seen":    ts,
+                    "count":        1,
+                    "handled":      False,
+                    "note":         "",
+                    # ── Champs de résolution ──────────────────────────
+                    "status":       "en_attente",  # en_attente | repondu | redirige
+                    "reponse_text": "",
+                    "page_cible_id":  None,
+                    "page_cible_url": "",
                 }
             _uq_save(data)
     except Exception:
@@ -947,6 +952,30 @@ def _fallback_afrique_dem_dikk(question: str) -> dict | None:
     }
 
 
+_LEMMES = {
+    "rembourse": "remboursement", "rembourser": "remboursement",
+    "remboursé": "remboursement", "remboursable": "remboursement",
+    "annule": "annulation", "annuler": "annulation", "annulé": "annulation",
+    "reserver": "reservation", "réserver": "reservation",
+    "reservé": "reservation", "réservé": "reservation", "reservez": "reservation",
+    "abonné": "abonnement", "abonner": "abonnement",
+    "perdu": "objet perdu", "perdue": "objet perdu",
+    "modifier": "modification", "modifié": "modification",
+    "contacter": "contact", "contactez": "contact",
+    "télécharger": "application", "téléchargement": "application",
+    "recharger": "rechargement", "rechargez": "rechargement",
+    "voyager": "voyage", "voyagé": "voyage",
+    "payer": "paiement", "payé": "paiement", "payez": "paiement",
+    "acheter": "achat", "acheté": "achat",
+    "perdre": "objet perdu",
+}
+
+
+def _lemmatize(text: str) -> str:
+    words = _norm(text).split()
+    return " ".join(_LEMMES.get(w, w) for w in words)
+
+
 def _smart_search_chatbot_page(question: str) -> dict | None:
     """
     Fallback générique à deux niveaux :
@@ -956,7 +985,7 @@ def _smart_search_chatbot_page(question: str) -> dict | None:
     """
     import re as _re
 
-    qn = _norm(question)
+    qn = _lemmatize(question)
     if not qn or len(qn) < 3:
         return None
 
@@ -977,7 +1006,7 @@ def _smart_search_chatbot_page(question: str) -> dict | None:
         return None
 
     def _word_score(text: str, title_bonus: int = 1) -> int:
-        n = _norm(text)
+        n = _lemmatize(text)
         return sum(title_bonus for w in query_words if w in n)
 
     # ── Niveau 1 : sous-sections ### (réponse la plus précise) ───────────────
@@ -1042,629 +1071,15 @@ def _smart_search_chatbot_page(question: str) -> dict | None:
 
 def _fallback_from_site(question: str) -> dict | None:
     """
-    Fallback ultra-ciblé quand la recherche interne répond 'pas trouvé'
-    alors que l'info existe sur la page officielle chatbot.
+    Fallback universel : cherche la meilleure section sur la page chatbot-2303
+    en comparant les mots de la question aux titres et contenus des sections.
+    Plus besoin de lister des mots-clés manuellement.
     """
-    qn = _norm(question)
-    if not qn:
-        return None
-
-    wants_abonnement = ("abonnement" in qn) or ("abonnements" in qn)
-    wants_colis = ("colis" in qn) or ("messagerie" in qn) or ("courrier" in qn)
-    # "carte perdue/volée/duplicata" → Erreurs courantes, PAS Tek Dem
-    _carte_probleme = (
-        qn in ("duplicata", "opposition", "carte perdue", "carte volee", "carte vole")
-        or ("carte" in qn and any(k in qn for k in ("perdu", "perdue", "volee", "vole", "duplicata", "opposition")))
-    )
-    wants_tekdem = (
-        (("tek dem" in qn) or ("tekk dem" in qn) or ("carte" in qn) or ("pass" in qn))
-        and not _carte_probleme
-    )
-    wants_app = ("application" in qn) or ("appli" in qn) or ("google play" in qn) or ("app store" in qn)
-    wants_bagages = ("bagage" in qn) or ("bagages" in qn)
-    wants_refund = (
-        ("remboursement" in qn)
-        or ("rembourser" in qn)
-        or ("rembourse" in qn)
-        or ("annulation" in qn)
-        or ("annuler" in qn)
-        or ("annule" in qn)
-        or ("report" in qn)
-        or ("reporte" in qn)
-        or ("reporter" in qn)
-        or ("modifier" in qn and ("billet" in qn or "reservation" in qn))
-        or ("modification" in qn and ("billet" in qn or "reservation" in qn))
-    )
-    wants_rechargement = (
-        ("rechargement" in qn)
-        or ("recharger" in qn)
-        or ("recharge" in qn)
-        or ("rechargez" in qn)
-    )
-    wants_geoloc = (
-        ("geolocalisation" in qn)
-        or ("géolocalisation" in qn)
-        or ("geolocali" in qn)
-        or ("suivi bus" in qn)
-        or ("position bus" in qn)
-        or ("temps reel" in qn)
-        or ("temps réel" in qn)
-    )
-    wants_contact = (
-        qn in ("contact", "contacts")
-        or ("contact" in qn)
-        or ("contacter" in qn)
-        or ("joindre" in qn)
-        or ("appeler" in qn)
-        or ("telephone" in qn)
-        or ("email" in qn)
-        or ("service client" in qn)
-        or ("assistance" in qn)
-        or ("horaire agence" in qn)
-        or ("horaires agence" in qn)
-        or ("adresse" in qn)
-        or ("se trouve" in qn)
-        or ("localise" in qn)
-        or ("localisation" in qn)
-        or ("situe" in qn)
-        or ("siege" in qn)
-        or ("bureau" in qn and any(k in qn for k in ("dem dikk", "ddd", "dakar")))
-        or ("comment vous" in qn and any(k in qn for k in ("contact", "joindre", "appeler", "trouver", "ecrire")))
-    )
-    wants_objet_perdu = (
-        ("objet perdu" in qn)
-        or (qn in ("objet", "perdu", "perdus", "objet perdu", "objets perdus"))
-        or ("perdu" in qn and "bord" in qn)
-        or ("perdu" in qn and not any(k in qn for k in ("carte", "tek dem", "pass", "billet")))
-        or ("volee" in qn and not any(k in qn for k in ("carte", "tek dem")))
-    )
-    wants_fess_dem = ("fess dem" in qn) or ("thies" in qn and "dakar" in qn) or ("thies" in qn and "prix" in qn)
-    wants_aibd = ("aibd" in qn) or ("aeroport" in qn) or ("blaise diagne" in qn)
-    wants_location = ("location" in qn and ("bus" in qn or "vehicule" in qn or qn == "location"))
-    wants_partenariat = ("partenariat" in qn) or ("publicite" in qn) or ("partenariat publicite" in qn) or ("publicite partenariat" in qn)
-    wants_services_list = (qn in ("service", "services", "offre", "offres", "offre transport", "offres transport"))
-    wants_reservation = (
-        ("reservation" in qn)
-        or ("reserver" in qn)
-        or ("reservez" in qn)
-        or ("billet" in qn and ("acheter" in qn or "achat" in qn or "comment" in qn))
-    )
-    wants_presentation = (
-        ("presentation" in qn)
-        or ("directeur" in qn)
-        or ("historique" in qn)
-        or ("histoire" in qn)
-        or ("creation" in qn and "dakar" in qn)
-        or ("fondation" in qn)
-        or ("assane" in qn)
-        or ("thierno" in qn)
-        or qn in ("ddd", "dem dikk", "dakar dem dikk", "qui sommes nous", "qui etes vous",
-                  "c est quoi dem dikk", "c est quoi dakar dem dikk", "kesako dem dikk")
-    )
-    wants_emploi = (
-        ("emploi" in qn)
-        or ("recrutement" in qn)
-        or ("offres d emploi" in qn)
-        or ("offre d emploi" in qn)
-        or ("travailler" in qn)
-        or ("candidature" in qn)
-        or ("postuler" in qn)
-        or ("poste" in qn)
-        or ("stage" in qn)
-        or ("cv" in qn and any(k in qn for k in ("envoyer", "deposer", "soumettre")))
-    )
-    wants_perturbation = (
-        ("communication" in qn)
-        or ("crise" in qn)
-        or ("perturbation" in qn)
-        or ("incident" in qn)
-        or ("intemperie" in qn)
-        or ("greve" in qn)
-        or ("retard" in qn)
-        or ("panne" in qn)
-        or ("maintenance" in qn)
-        or ("innovation" in qn)
-        or ("paiement" in qn and ("mobile" in qn or "dematerialise" in qn or "wave" in qn or "orange" in qn))
-    )
-    if not (
-        wants_abonnement or wants_colis or wants_tekdem or wants_app
-        or wants_bagages or wants_refund or wants_rechargement
-        or wants_geoloc or wants_contact or wants_objet_perdu
-        or wants_fess_dem or wants_aibd or wants_location
-        or wants_partenariat or wants_services_list
-        or wants_reservation or wants_presentation or wants_emploi
-        or wants_perturbation or _carte_probleme
-    ):
-        return None
-
     url = "https://demdikk.sn/chatbot-2303/"
     page_text = _fetch_page_text(url)
     if not page_text:
         return None
-
-    def _section_is_substantial(section: str, must_contain: tuple = ()) -> bool:
-        """Refuse une section trop courte ou sans info métier (cas des cartes home)."""
-        if not section:
-            return False
-        # Retirer le titre éventuel (1ère ligne courte sans verbe)
-        clean = (section or "").strip()
-        if len(clean) < 150:
-            return False
-        low = clean.lower()
-        # Au moins un terme métier réel (chiffre / prix / verbe d'action / etc.)
-        metier = (
-            "fcfa", "f cfa", "prix", "tarif", "mensuel", "annuel", "carte",
-            "réservation", "reservation", "billet", "ticket", "horaire",
-            "agence", "guichet", "ligne", "départ", "depart", "arrivée", "arrivee",
-            "contact", "téléphone", "telephone", "email", "@",
-            "abonnement", "messagerie", "expédition", "expedition", "colis",
-            "service", "modalité", "modalite",
-        )
-        if not any(m in low for m in metier):
-            return False
-        if must_contain and not any(m.lower() in low for m in must_contain):
-            return False
-        return True
-
-    if _carte_probleme:
-        section = _extract_section(
-            page_text,
-            ("### Erreurs courantes", "Erreurs courantes", "Carte non reconnue", "Carte perdue"),
-            max_chars=1000,
-        )
-        section = _clip_at_next_subheading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_abonnement:
-        section = _extract_section(
-            page_text,
-            ("Abonnements mensuels", "Abonnement mensuel", "Abonnement"),
-            max_chars=2200,
-        )
-        section = _clip_at_next_top_heading(section)
-        # Exiger une section substantielle (mot 'abonnement' + prix/carte/mensuel/etc.)
-        # sinon laisser la recherche vectorielle prendre le relais (chunk /services/).
-        if _section_is_substantial(section, must_contain=("abonnement",)):
-            return _make_chatbot_result(section)
-
-    if wants_colis:
-        section = _extract_section(
-            page_text,
-            ("Service Messagerie Express", "messagerie express", "colis et courriers"),
-            max_chars=2400,
-        )
-        section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_tekdem:
-        section = _extract_section(
-            page_text,
-            ("Carte Tek Dem", "Tek Dem", "pass Tek Dem", "Frais de carte"),
-            max_chars=2200,
-        )
-        if not section:
-            section = _extract_section(page_text, ("Carte Tek Dem",), max_chars=2600)
-        section = _clip_at_next_top_heading(section)
-        if section and "tek dem" in _norm(section):
-            return _make_chatbot_result(section)
-
-    if wants_app:
-        # Chercher en priorité le titre exact de la section Application
-        section = _extract_section(
-            page_text,
-            (
-                "### Application Dem Dikk",
-                "## 15. Fidélité et application mobile",
-                "## 15. Fidelite et application mobile",
-                "Fidélité et application mobile",
-                "Fidelite et application mobile",
-            ),
-            max_chars=2000,
-        )
-        section = _clip_at_next_top_heading(section)
-        if not section:
-            # Fallback : partir de l'URL Play Store mais vers l'avant, pas l'arrière
-            pt_low = page_text.lower()
-            idx = pt_low.find("play.google.com")
-            if idx < 0:
-                idx = pt_low.find("apps.apple.com")
-            if idx >= 0:
-                # Chercher le début de la section (### ou ## avant l'URL)
-                start = page_text.rfind("###", 0, idx)
-                if start < 0:
-                    start = page_text.rfind("##", 0, idx)
-                if start < 0:
-                    start = max(0, idx - 200)
-                section = page_text[start: start + 2000].strip()
-                section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_refund:
-        qn_ref = _norm(question)
-        only_remb = (
-            ("remboursement" in qn_ref or "rembourser" in qn_ref or "rembourse" in qn_ref)
-            and "annulation" not in qn_ref
-            and "report" not in qn_ref
-        )
-        only_annul = (
-            ("annulation" in qn_ref or "annuler" in qn_ref or "annule" in qn_ref
-             or "report" in qn_ref or "reporte" in qn_ref or "reporter" in qn_ref)
-            and "remboursement" not in qn_ref
-            and "modifier" not in qn_ref
-            and "modification" not in qn_ref
-        )
-        if only_remb:
-            # Extraire uniquement la sous-section Remboursement
-            section = _extract_section(
-                page_text,
-                ("### Remboursement", "Remboursement\n", "Remboursement "),
-                max_chars=800,
-            )
-            section = _clip_at_next_subheading(section)
-            if not section:
-                section = _extract_section(
-                    page_text,
-                    ("Remboursement",),
-                    max_chars=600,
-                )
-        elif only_annul:
-            # Extraire uniquement la sous-section Annulation et report
-            # Utiliser un marqueur précis pour éviter de matcher le titre de la grande section
-            section = _extract_section(
-                page_text,
-                ("### Annulation et report", "### Annulation"),
-                max_chars=800,
-            )
-            section = _clip_at_next_subheading(section)
-            if not section:
-                # Chercher la ligne contenant "Annulation et report" comme titre de sous-section
-                import re as _re
-                m = _re.search(r'(Annulation et report\s*\n.{20,})', page_text, _re.DOTALL | _re.IGNORECASE)
-                if m:
-                    section = m.group(0)[:800]
-        else:
-            # Requête mixte ou générale → toute la section gestion
-            section = _extract_section(
-                page_text,
-                (
-                    "## 7. Gestion des réservations, annulations, reports et remboursements",
-                    "## 7. Gestion des reservations, annulations, reports et remboursements",
-                    "Gestion des réservations, annulations, reports et remboursements",
-                    "Gestion des reservations, annulations, reports et remboursements",
-                ),
-                max_chars=2600,
-            )
-            section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_bagages:
-        section = _extract_section(
-            page_text,
-            (
-                "## 8. Bagages et colis : règles et conditions",
-                "## 8. Bagages et colis : regles et conditions",
-                "Bagages et colis : règles et conditions",
-                "Bagages et colis : regles et conditions",
-                "Bagages à bord",
-                "Bagages a bord",
-            ),
-            max_chars=2200,
-        )
-        section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_rechargement:
-        section = _extract_section(
-            page_text,
-            (
-                "### Rechargement de la carte Tek Dem",
-                "Rechargement de la carte Tek Dem",
-                "### Rechargement",
-            ),
-            max_chars=1000,
-        )
-        section = _clip_at_next_subheading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_geoloc:
-        section = _extract_section(
-            page_text,
-            (
-                "Géolocalisation temps réel",
-                "Geolocalisation temps reel",
-                "Géolocalisation en temps réel",
-                "Geolocalisation en temps reel",
-                "## 13.",
-            ),
-            max_chars=1600,
-        )
-        section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_contact:
-        # Question spécifiquement sur l'adresse/localisation → réponse directe
-        wants_address_only = any(k in qn for k in (
-            "adresse", "se trouve", "localise", "localisation", "situe", "siege", "ou etes vous"
-        ))
-        if wants_address_only:
-            return _make_chatbot_result(_ADDRESS_BLOCK)
-
-        section = _extract_section(
-            page_text,
-            (
-                "17. Contact et assistance humaine",
-                "Contact et assistance humaine",
-                "### Service client",
-            ),
-            max_chars=1600,
-        )
-        section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_objet_perdu:
-        section = _extract_section(
-            page_text,
-            ("Objets perdus", "objet perdu"),
-            max_chars=1200,
-        )
-        section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_fess_dem:
-        section = _extract_section(
-            page_text,
-            ("Service Fess Dem", "Fess Dem", "## 5."),
-            max_chars=1200,
-        )
-        section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_aibd:
-        section = _extract_section(
-            page_text,
-            (
-                "## 3. Service AIBD",
-                "Service AIBD",
-                "Horaires des navettes",
-                "Premier départ : 4h",
-                "Premier depart : 4h",
-            ),
-            max_chars=1400,
-        )
-        section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_location:
-        section = _extract_section(
-            page_text,
-            (
-                "Location de bus",
-                "location de bus",
-                "Location",
-                "événements privés",
-                "evenements prives",
-                "navettes spéciales",
-            ),
-            max_chars=1200,
-        )
-        section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_partenariat:
-        section = _extract_section(
-            page_text,
-            (
-                "Publicité et partenariats",
-                "Publicite et partenariats",
-                "## 16.",
-                "Devenez partenaire",
-                "Espaces publicitaires",
-                "partenariat@demdikk",
-            ),
-            max_chars=1400,
-        )
-        section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_services_list:
-        # Construire une liste des services depuis les sections disponibles
-        services_summary = (
-            "Dakar Dem Dikk propose les services suivants :\n"
-            "– Réseau urbain Dakar (lignes de bus, abonnements, carte Tek Dem)\n"
-            "– Sénégal Dem Dikk – liaisons interurbaines vers les régions du Sénégal\n"
-            "– Afrique Dem Dikk – liaisons internationales (ex : Gambie/Banjul)\n"
-            "– Service AIBD – navettes vers l'Aéroport International Blaise Diagne (4h–22h, 6 000 FCFA)\n"
-            "– Fess Dem – liaison Dakar–Thiès (2 000 FCFA, départ gare Colobane)\n"
-            "– Messagerie Express – envoi de colis et courriers vers les régions\n"
-            "– Location de bus – événements privés, scolaires, navettes spéciales (sur devis)\n"
-            "– Publicité & Partenariats – espaces à bord, en agence et sur l'application\n"
-            "\nPour plus d'informations :\n"
-            "– Téléphone : +221 33 824 10 10 / +221 33 865 15 55\n"
-            "– Email : info@demdikk.sn\n"
-            "– Site web : demdikk.sn"
-        )
-        return _make_chatbot_result(services_summary)
-
-    if wants_reservation:
-        section = _extract_section(
-            page_text,
-            (
-                "### Réservation",
-                "### Reservation",
-                "## 7. Gestion des réservations",
-                "## 7. Gestion des reservations",
-                "Réservation et modification",
-                "Reservation et modification",
-                "Vous pouvez réserver",
-                "Vous pouvez reserver",
-            ),
-            max_chars=2000,
-        )
-        section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    if wants_presentation:
-        pres_url = "https://demdikk.sn/presentation/"
-        pres_text = _fetch_page_text(pres_url)
-        if pres_text:
-            # Si on cherche les directeurs spécifiquement
-            if "directeur" in qn or "assane" in qn or "thierno" in qn:
-                section = _extract_section(
-                    pres_text,
-                    (
-                        "directeurs généraux",
-                        "directeurs generaux",
-                        "Directeur Général",
-                        "Directeur General",
-                        "six (06) directeurs",
-                        "directeurs g",
-                    ),
-                    max_chars=2000,
-                )
-                if section:
-                    return {
-                        "answer": section,
-                        "summary": section[:280],
-                        "bullets": [],
-                        "sources": [{"title": "Présentation – Dakar Dem Dikk", "url": pres_url, "score": 1.0}],
-                        "results": [{"url": pres_url, "title": "Présentation – Dakar Dem Dikk", "snippet": section[:500], "full_text": section}],
-                        "query_type": "general",
-                        "needs_clarification": False,
-                        "has_structured_data": False,
-                        "is_city_query": False,
-                        "is_line_query": False,
-                    }
-            # Présentation générale
-            section = _extract_section(
-                pres_text,
-                (
-                    "Dakar Dem Dikk",
-                    "présentation",
-                    "Présentation",
-                    "historique",
-                    "Historique",
-                    "création",
-                    "Creation",
-                ),
-                max_chars=2500,
-            )
-            if not section or len(section) < 80:
-                section = pres_text[:2500].strip()
-            if section:
-                return {
-                    "answer": section,
-                    "summary": section[:280],
-                    "bullets": [],
-                    "sources": [{"title": "Présentation – Dakar Dem Dikk", "url": pres_url, "score": 1.0}],
-                    "results": [{"url": pres_url, "title": "Présentation – Dakar Dem Dikk", "snippet": section[:500], "full_text": section}],
-                    "query_type": "general",
-                    "needs_clarification": False,
-                    "has_structured_data": False,
-                    "is_city_query": False,
-                    "is_line_query": False,
-                }
-
-    if wants_emploi:
-        # Essayer de récupérer la page emploi officielle
-        emploi_url = "https://demdikk.sn/offres-demploi/"
-        emploi_text = _fetch_page_text(emploi_url)
-        if not emploi_text or len(emploi_text) < 100:
-            emploi_url2 = "https://demdikk.sn/offres-emploi/"
-            emploi_text = _fetch_page_text(emploi_url2)
-        if emploi_text and len(emploi_text) > 100:
-            section = emploi_text[:3000].strip()
-            return {
-                "answer": section,
-                "summary": section[:280],
-                "bullets": [],
-                "sources": [{"title": "Offres d'emploi – Dakar Dem Dikk", "url": emploi_url, "score": 1.0}],
-                "results": [{"url": emploi_url, "title": "Offres d'emploi – Dakar Dem Dikk", "snippet": section[:500], "full_text": section}],
-                "query_type": "general",
-                "needs_clarification": False,
-                "has_structured_data": False,
-                "is_city_query": False,
-                "is_line_query": False,
-            }
-        # Fallback statique si la page emploi n'est pas accessible
-        emploi_info = (
-            "Pour consulter les offres d'emploi de Dakar Dem Dikk :\n"
-            "– Site web : demdikk.sn/offres-demploi/\n"
-            "– Candidature spontanée : envoyez un email ou rendez-vous au siège\n"
-            "– Téléphone : +221 33 824 10 10 / +221 33 865 15 55\n"
-            "– Email : info@demdikk.sn / contact@demdikk.sn\n"
-            "– Adresse : Km 4,5 Avenue Cheikh Anta Diop, dépôt Ouakam, Dakar\n"
-            "– Horaires : Lundi – Vendredi, 08h – 17h"
-        )
-        return _make_chatbot_result(emploi_info)
-
-    if wants_perturbation:
-        qn_pert = _norm(question)
-        # Sous-section spécifique selon le mot-clé
-        if "communication" in qn_pert or "crise" in qn_pert:
-            section = _extract_section(
-                page_text,
-                ("### Communication de crise", "Communication de crise"),
-                max_chars=900,
-            )
-            section = _clip_at_next_subheading(section)
-        elif "intemperie" in qn_pert:
-            section = _extract_section(
-                page_text,
-                ("### Intempéries", "### Intemperies", "Intempéries", "Intemperies"),
-                max_chars=900,
-            )
-            section = _clip_at_next_subheading(section)
-        elif "incident" in qn_pert or "panne" in qn_pert or "retard" in qn_pert:
-            section = _extract_section(
-                page_text,
-                ("### Incidents techniques", "Incidents techniques"),
-                max_chars=900,
-            )
-            section = _clip_at_next_subheading(section)
-        elif "maintenance" in qn_pert or "innovation" in qn_pert or "paiement" in qn_pert:
-            section = _extract_section(
-                page_text,
-                (
-                    "## 13. Informations techniques et innovation",
-                    "## 13. Informations techniques",
-                    "Informations techniques et innovation",
-                    "### Maintenance",
-                    "### Paiement",
-                ),
-                max_chars=1800,
-            )
-            section = _clip_at_next_top_heading(section)
-        else:
-            # Toute la section "Gestion des perturbations et des crises"
-            section = _extract_section(
-                page_text,
-                (
-                    "## 14. Gestion des perturbations et des crises",
-                    "## 14. Gestion des perturbations",
-                    "Gestion des perturbations et des crises",
-                    "Gestion des perturbations",
-                ),
-                max_chars=2000,
-            )
-            section = _clip_at_next_top_heading(section)
-        if section:
-            return _make_chatbot_result(section)
-
-    return None
+    return _smart_search_chatbot_page(question)
 
 
 def _fix_orphan_subitems(text: str) -> str:
@@ -2431,6 +1846,120 @@ def admin_uq_save_note(uid: str):
         q["note"] = note
         _uq_save(data)
     return jsonify({"status": "ok"})
+
+
+# ── Route : résolution d'une question (réponse directe ou redirection WP) ────
+
+@app.route("/admin/unknown-queries/<uid>/resolve", methods=["POST"])
+def admin_uq_resolve(uid: str):
+    """
+    Marque une question comme résolue :
+      - status='repondu'  + reponse_text
+      - status='redirige' + page_cible_id + page_cible_url
+    """
+    if not _admin_check_token(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    body   = request.get_json(silent=True) or {}
+    status = (body.get("status") or "").strip()
+    if status not in ("repondu", "redirige"):
+        return jsonify({"error": "status doit être 'repondu' ou 'redirige'"}), 400
+
+    with _uq_lock:
+        data = _uq_load()
+        q    = data.get("queries", {}).get(uid)
+        if not q:
+            return jsonify({"error": "not found"}), 404
+
+        q["status"]  = status
+        q["handled"] = True
+        if status == "repondu":
+            q["reponse_text"]  = (body.get("reponse_text") or "").strip()[:4000]
+            q["page_cible_id"] = body.get("page_cible_id")
+            q["page_cible_url"] = (body.get("page_cible_url") or "").strip()
+        else:  # redirige
+            q["page_cible_id"]  = body.get("page_cible_id")
+            q["page_cible_url"] = (body.get("page_cible_url") or "").strip()
+        _uq_save(data)
+    return jsonify({"status": "ok", "id": uid, "resolution": status})
+
+
+# ── Route : liste des pages WordPress disponibles ────────────────────────────
+
+@app.route("/admin/wp-pages", methods=["GET"])
+def admin_wp_pages():
+    """
+    Retourne les pages publiées du site WordPress (id, title, link).
+    Utilisé par le plugin WP pour remplir les listes déroulantes.
+    """
+    if not _admin_check_token(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    import urllib.request as _ur
+    wp_base = (os.environ.get("WP_API_BASE") or "https://demdikk.sn/wp-json/wp/v2").rstrip("/")
+    pages = []
+    for endpoint in (f"{wp_base}/pages?per_page=100&status=publish",
+                     f"{wp_base}/posts?per_page=100&status=publish"):
+        try:
+            req = _ur.Request(endpoint, headers={
+                "User-Agent": "DDD-Chatbot-Admin/1.0",
+                "Accept": "application/json",
+            })
+            with _ur.urlopen(req, timeout=10) as resp:
+                items = json.loads(resp.read())
+            for it in items:
+                pages.append({
+                    "id":    it.get("id"),
+                    "title": (it.get("title") or {}).get("rendered", ""),
+                    "link":  it.get("link", ""),
+                    "type":  "page" if "/pages" in endpoint else "post",
+                })
+        except Exception:
+            pass
+    return jsonify({"pages": pages})
+
+
+# ── Lookup requêtes résolues (utilisé par app_backup.py via import) ───────────
+
+def lookup_resolved_query(question: str) -> dict | None:
+    """
+    Cherche dans unknown_queries.json si une question identique ou très proche
+    a déjà été résolue (status = 'repondu' ou 'redirige').
+    Retourne l'entrée trouvée ou None.
+    Comparaison : clé exacte d'abord, puis similarité Jaccard ≥ 0.60.
+    """
+    try:
+        data    = _uq_load()
+        queries = data.get("queries", {})
+        if not queries:
+            return None
+
+        key = _uq_key(question)
+        # 1. Correspondance exacte sur la clé dédoublonnée
+        for entry in queries.values():
+            if entry.get("status") in ("repondu", "redirige"):
+                if _uq_key(entry.get("question", "")) == key:
+                    return entry
+
+        # 2. Similarité Jaccard sur les mots significatifs
+        sig_q = set(_uq_significant_words(question))
+        if not sig_q:
+            return None
+        best_score, best_entry = 0.0, None
+        for entry in queries.values():
+            if entry.get("status") not in ("repondu", "redirige"):
+                continue
+            sig_e = set(_uq_significant_words(entry.get("question", "")))
+            if not sig_e:
+                continue
+            inter = len(sig_q & sig_e)
+            union = len(sig_q | sig_e)
+            score = inter / union if union else 0.0
+            if score > best_score:
+                best_score, best_entry = score, entry
+        if best_score >= 0.60:
+            return best_entry
+    except Exception:
+        pass
+    return None
 
 
 # ── Point d'entrée (développement local) ─────────────────────────────────────
