@@ -146,6 +146,17 @@ function shouldShowMoreInfoLink(json) {
   if (!json) return false
   if (json.show_more_info === false) return false
   if (json.show_more_info === true) return true
+
+  // Réponses conversationnelles / politesse → pas de bouton "Plus d'infos"
+  const ans = (json.answer || '').trim()
+  const CONVERSATIONAL = /^(je vous en prie|avec plaisir|de rien|pas de probl[eè]me|c[''']est un plaisir|enchant[eé]|bienvenue)/i
+  if (CONVERSATIONAL.test(ans)) return false
+  // Réponse courte sans données factuelles (prix, horaires, lignes, coordonnées...)
+  if (
+    ans.length < 160 &&
+    !/\d{3,}|fcfa|prix|tarif|d[eé]part|terminus|ligne\s+\d|bus\s+n|arr[eê]t|\+221/i.test(ans)
+  ) return false
+
   if (json.is_city_query || json.is_line_query) return true
   if (json.has_structured_data) return true
   const hasResults = json.results && json.results.length > 0

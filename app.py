@@ -245,24 +245,24 @@ def _log_unknown_query(question: str, reason: str = "not_found") -> None:
         pass
 
 _LLM_SYSTEM = (
-    "Tu es l'assistant de Dakar Dem Dikk. "
-    "Ton UNIQUE rôle est de reformuler en français fluide et naturel "
-    "les informations que le système t'a déjà trouvées sur le site de Dakar Dem Dikk. "
-    "RÈGLES ABSOLUES : "
-    "1. Tu ne peux utiliser QUE les informations du contexte fourni — jamais d'inventions. "
-    "2. Si le contexte contient la réponse, reformule-la de façon fluide et agréable à lire. "
-    "3. Si le contexte ne contient pas la réponse à la question, réponds EXACTEMENT ce texte "
-    "(sans rien ajouter ni modifier) : "
-    "'Je n\\'ai pas trouvé cette information sur le site de Dakar Dem Dikk.\\n"
-    "Vous pouvez les contacter directement :\\n"
+    "Tu es un agent du service client de Dakar Dem Dikk (DDD), la société de transport en commun de Dakar. "
+    "Tu réponds directement aux questions des usagers, comme un conseiller humain bienveillant et professionnel. "
+    "RÈGLES ABSOLUES :\n"
+    "1. Utilise UNIQUEMENT les informations du contexte fourni — jamais d'inventions ni de connaissances propres.\n"
+    "2. Réponds directement et naturellement, SANS mentionner « le site », « le contexte », "
+    "« les informations disponibles » ni que tu as « trouvé » ou « consulté » quoi que ce soit.\n"
+    "3. Va droit au but dès la première phrase, sans préambule du type « D'après... », « Selon... », "
+    "« Les informations indiquent... », « D'après les informations disponibles... ».\n"
+    "4. Si le contexte ne contient PAS la réponse, réponds EXACTEMENT ce texte (sans rien ajouter ni modifier) :\n"
+    "'Je n\\'ai pas trouvé cette information.\\n"
+    "Vous pouvez contacter notre service client directement :\\n"
     "– Téléphone : +221 33 824 10 10 / +221 33 865 15 55\\n"
     "– Email : info@demdikk.sn / contact@demdikk.sn\\n"
     "– Adresse : Km 4,5 Avenue Cheikh Anta Diop, dépôt Ouakam, Dakar\\n"
     "– Horaires : Lundi – Vendredi, 08h – 17h\\n"
-    "– Site web : demdikk.sn' "
-    "4. Ne complète jamais avec tes propres connaissances. "
-    "5. Réponds toujours en français, jamais en anglais. "
-    "6. N'utilise JAMAIS de balises markdown comme ##, ###, **. Écris en texte clair avec des tirets (–) pour les listes."
+    "– Site web : demdikk.sn'\n"
+    "5. Réponds toujours en français. N'utilise jamais de balises markdown (##, ###, **). "
+    "Utilise des tirets (–) pour les listes si nécessaire."
 )
 
 def _init_deepseek():
@@ -413,6 +413,31 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
     except Exception:
         pass
 
+    # ── Synchronisation des deux chemins (RAG ↔ carte structurée) ──────────────
+    # Si la question porte sur une ville interurbaine mentionnée dans l'historique
+    # mais que le RAG n'a pas retourné la carte structurée (is_city_query est faux),
+    # on injecte les données exactes de interurbain_data dans le contexte DeepSeek.
+    # Cela évite que le chemin RAG donne des infos incomplètes (ex : point de départ)
+    # alors que la carte structurée aurait la réponse précise.
+    if client_history and not original_data.get("is_city_query"):
+        try:
+            impl = sys.modules.get("app_flask_impl")
+            if impl:
+                _ph = getattr(impl, "_parse_history_entries", None)
+                _hlc = getattr(impl, "_history_last_city_section", None)
+                _cte = getattr(impl, "_city_token_for_enrichment", None)
+                _fca = getattr(impl, "_format_city_answer", None)
+                if _ph and _hlc and _cte and _fca:
+                    hist_entries = _ph(client_history)
+                    hist_city = _hlc(hist_entries)
+                    if hist_city:
+                        city_key = _cte(hist_city)
+                        city_text = _fca(hist_city, city_key)
+                        if city_text and city_text not in context:
+                            context_parts.append(city_text)
+        except Exception:
+            pass
+
     context = "\n\n".join(p for p in context_parts if p).strip()
     if not context or len(context) < 20:
         return original_data
@@ -421,22 +446,21 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
     if history_block:
         user_prompt = (
             f"{history_block}\n\n"
-            f"Voici les informations trouvées sur le site de Dakar Dem Dikk :\n"
+            f"Informations disponibles :\n"
             f"---\n{context}\n---\n\n"
-            f"Question actuelle de l'usager : {question}\n\n"
-            "Reformule ces informations en une réponse fluide et naturelle en français "
-            "(3 à 5 phrases). Utilise UNIQUEMENT ce qui est écrit dans le bloc « site » ci-dessus "
-            "(pas d'invention ; l'historique ne constitue pas une source factuelle). "
-            "Si l'information demandée n'est pas dans le texte du site ci-dessus, dis-le clairement."
+            f"Question : {question}\n\n"
+            "Réponds directement à cette question en te basant uniquement sur les informations ci-dessus. "
+            "Ne mentionne pas le site, le contexte, ni que tu as trouvé une information. "
+            "Va droit au but dès la première phrase."
         )
     else:
         user_prompt = (
-            f"Voici les informations trouvées sur le site de Dakar Dem Dikk :\n"
+            f"Informations disponibles :\n"
             f"---\n{context}\n---\n\n"
-            f"Question de l'usager : {question}\n\n"
-            "Reformule ces informations en une réponse fluide et naturelle en français "
-            "(3 à 5 phrases). Utilise UNIQUEMENT ce qui est écrit ci-dessus. "
-            "Si l'information demandée n'est pas dans le texte ci-dessus, dis-le clairement."
+            f"Question : {question}\n\n"
+            "Réponds directement à cette question en te basant uniquement sur les informations ci-dessus. "
+            "Ne mentionne pas le site, le contexte, ni que tu as trouvé une information. "
+            "Va droit au but dès la première phrase."
         )
 
     try:
@@ -471,8 +495,13 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
             enhanced["answer"] = text
             enhanced["llm_provider"] = "deepseek"
             enhanced["llm_enhanced"] = True
-            # Compat front/back : garder les anciens champs
-            enhanced["gemini_enhanced"] = True
+            enhanced["gemini_enhanced"] = True  # compat front/back
+            # DeepSeek a produit un texte fluide → on retire les flags "carte structurée"
+            # pour que le frontend affiche le texte naturel plutôt qu'un bloc PRIX/DÉPART/…
+            if original_data.get("is_city_query") or original_data.get("query_type") == "city_info":
+                enhanced["has_structured_data"] = False
+                enhanced["is_city_query"] = False
+                enhanced["query_type"] = "general"
             return enhanced
     except Exception as e:
         err_str = str(e)

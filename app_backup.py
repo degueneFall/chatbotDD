@@ -36,8 +36,8 @@ except ImportError:
 
 # Bloc de contact (identique à app.py `_CONTACT_BLOCK`) — réponse quand rien n’est trouvé dans l’index
 _CONTACT_NOT_FOUND_BLOCK = (
-    "Je n'ai pas trouvé cette information sur le site de Dakar Dem Dikk.\n"
-    "Vous pouvez les contacter directement :\n"
+    "Je n'ai pas trouvé cette information.\n"
+    "Vous pouvez contacter notre service client directement :\n"
     "– Téléphone : +221 33 824 10 10 / +221 33 865 15 55\n"
     "– Email : info@demdikk.sn / contact@demdikk.sn\n"
     "– Adresse : Km 4,5 Avenue Cheikh Anta Diop, dépôt Ouakam, Dakar\n"
@@ -278,13 +278,19 @@ def _format_city_answer(section: dict, ville: str) -> str:
 # ── Détection ville ───────────────────────────────────────────────────────────
 def _detect_city(q_norm: str) -> dict | None:
     """Détecte une ville interurbaine dans la requête normalisée (mot entier uniquement)."""
+    # Variante sans tiret pour matcher "saint louis" == "saint-louis"
+    q_no_hyphen = q_norm.replace("-", " ")
     for section in INTERURBAIN_SECTIONS:
         for ville in section.get("villes", []):
             ville_n = _norm(ville)
-            # Correspondance mot entier pour éviter les faux positifs
-            # ex: "mbour" ne doit pas matcher "remboursement"
-            if re.search(r'\b' + re.escape(ville_n) + r'\b', q_norm):
-                return section
+            ville_no_hyphen = ville_n.replace("-", " ")
+            # Tester les deux variantes (avec et sans tiret)
+            for (pattern, text) in [
+                (re.escape(ville_n), q_norm),
+                (re.escape(ville_no_hyphen), q_no_hyphen),
+            ]:
+                if re.search(r'\b' + pattern + r'\b', text):
+                    return section
     return None
 
 
@@ -661,10 +667,15 @@ def _is_smalltalk_question(question: str) -> bool:
         return False
     if re.search(
         r"^("
-        r"tu\s+vas(\s+bien)?|comment\s+(tu\s+)?vas|ça\s+va|tout\s+va(\s+bien)?|"
+        # Formules de remerciement et réponses positives
+        r"(ok\s+)?merci(\s+(beaucoup|bien|infiniment|mille\s+fois))?|"
+        r"(merci\s+)?super(\s+merci)?|(merci\s+)?parfait(\s+merci)?|"
+        r"(ok\s+)?(c[\u2019']est\s+bon|cest\s+bon|ca\s+va|c\s+est\s+bon)(\s+merci)?|"
+        r"ok(\s+merci)?(\s+bien)?|d[\u2019']accord(\s+merci)?|genial|"
+        # Salutations
+        r"tu\s+vas(\s+bien)?|comment\s+(tu\s+)?vas|tout\s+va(\s+bien)?|"
         r"comment\s+allez[-\s]?vous|vous\s+allez\s+bien|"
-        r"merci(\s+(beaucoup|bien))?|ok|d'accord|super|génial|parfait|"
-        r"salut|bonjour|bonsoir|coucou|hello|hi|bye|au\s+revoir|à\s+bientôt"
+        r"salut|bonjour|bonsoir|coucou|hello|hi|bye|au\s+revoir|a\s+bientot"
         r")[\s?!.,;:]*$",
         qn,
     ):
@@ -722,7 +733,13 @@ _ENRICH_STOPWORDS = frozenset({
     "quelles","il","elle","ils","elles","je","tu","nous","vous","on",
     "ne","pas","plus","est","sont","a","y","en","or","ni","mais","donc",
     "comment","combien","quand","pourquoi","ou",
+    # Verbes auxiliaires/courants sans sens porteur dans le contexte de suivi
+    "se","me","te","va","vont","fait","font","faire","aller","avoir","etre",
+    "part","partent","arrive","arrivent","prend","prennent","met","mettent",
 })
+
+# Noms de la société → jamais enrichis comme suite de conversation
+_COMPANY_NAME_TOKENS = frozenset({"dem dikk", "demdikk", "ddd", "dakar dem dikk"})
 
 
 def _enrich_short_question_from_history(question: str, history_raw) -> str:
@@ -733,10 +750,17 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
     q = (question or "").strip()
     if not q:
         return q
+    # Nom de la société seul → jamais enrichi comme suite de conversation
+    qn_check = _norm(q)
+    if qn_check in _COMPANY_NAME_TOKENS or all(
+        t in _COMPANY_NAME_TOKENS or t in _ENRICH_STOPWORDS
+        for t in qn_check.split()
+    ):
+        return q
     # Compter uniquement les mots porteurs de sens (hors stopwords)
-    qn_words = _norm(q).split()
+    qn_words = qn_check.split()
     meaningful = [w for w in qn_words if len(w) >= 2 and w not in _ENRICH_STOPWORDS]
-    if len(meaningful) >= 3:
+    if len(meaningful) >= 4:
         return q
     if _is_smalltalk_question(q):
         return q
@@ -754,9 +778,32 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
 
     qn = _norm(q)
 
-    # Suivi pronominal direct : « elle part d'où » → rattacher immédiatement
+    # ── Suivi pronominal direct : « elle part d'où » → rattacher immédiatement
     if line_num and re.match(r"^\s*(elle|il|celle|celui|ça|ce)\b", q, re.IGNORECASE):
         return f"ligne {line_num} {q}".strip()
+
+    # ── Détection rapide de mots de référence contextuelle ───────────────────
+    # Ces formulations indiquent clairement une question de suivi sur le même sujet
+    # sans ambiguïté : on enrichit sans appeler DeepSeek.
+    _FAST_REF = re.compile(
+        r"d[\u2019\u0027\u02bc]o[u\u00f9]"           # d'où / d'ou
+        r"|depuis\s+o[u\u00f9]"                        # depuis où
+        r"|\ble\s+prix\b|\ble\s+tarif\b"               # le prix / le tarif
+        r"|\bl[ae]?\s+dur[e\u00e9]e\b"                 # la durée
+        r"|\bcombi[e\u00e8]n\s+de\s+temps\b"           # combien de temps
+        r"|\bcombi[e\u00e8]n\s+(?:ca|\u00e7a)\s+co[u\u00fb]te?\b"  # combien ça coûte
+        r"|\b[a\u00e0]\s+quelle\s+heure\b"             # à quelle heure
+        r"|\bcomment\s+(?:r[e\u00e9]server|partir|r[e\u00e9]server)\b",  # comment réserver
+        re.IGNORECASE,
+    )
+    if re.search(_FAST_REF, q):
+        # Référence contextuelle évidente → enrichir immédiatement
+        if city_sec and line_num:
+            return f"{_city_token_for_enrichment(city_sec)} ligne {line_num} {q}".strip()
+        if city_sec:
+            return f"{_city_token_for_enrichment(city_sec)} {q}".strip()
+        if line_num:
+            return f"ligne {line_num} {q}".strip()
 
     # ── Résolution intelligente via DeepSeek ─────────────────────────────────
     # On construit un résumé du contexte pour DeepSeek
@@ -839,9 +886,9 @@ def ask():
     # ── 0. Lookup base de connaissances résolue (questions déjà traitées) ────
     try:
         import importlib as _imp
-        _app_mod = _imp.import_module("app") if "app" in sys.modules else None
+        import sys as _sys
+        _app_mod = _imp.import_module("app") if "app" in _sys.modules else None
         if _app_mod is None:
-            import sys as _sys
             _app_mod = _sys.modules.get("app")
         _lookup_fn = getattr(_app_mod, "lookup_resolved_query", None) if _app_mod else None
         if _lookup_fn:
@@ -1019,7 +1066,7 @@ def ask():
     # ── 6. Fallback (le wrapper app.py peut encore enrichir / reformuler) ─────
     return jsonify({
         "answer":   _CONTACT_NOT_FOUND_BLOCK,
-        "summary":  "Je n'ai pas trouvé cette information sur le site de Dakar Dem Dikk.",
+        "summary":  "Je n'ai pas trouvé cette information.",
         "sources":  [{"title": "Dakar Dem Dikk — Contact", "url": "https://demdikk.sn/", "score": 0}],
         "results":  [],
         "query_type": "other",

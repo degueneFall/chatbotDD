@@ -14,5 +14,4 @@ PAGE_URLS: list[str] = [
     "https://demdikk.sn/reseau-urbain-dakar/",
     "https://demdikk.sn/reseau-interurbain/",
     "https://demdikk.sn/presentation/",
-    "https://demdikk.sn/actualites/",
 ]
