@@ -87,7 +87,6 @@ _CONTACT_BLOCK = (
     "– Email : info@demdikk.sn / contact@demdikk.sn\n"
     "– Adresse : Km 4,5 Avenue Cheikh Anta Diop, dépôt Ouakam, Dakar\n"
     "– Horaires : Lundi – Vendredi, 08h – 17h\n"
-    "– Site web : demdikk.sn"
 )
 
 _ADDRESS_BLOCK = (
