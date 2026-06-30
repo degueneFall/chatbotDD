@@ -9,7 +9,7 @@ IN_FILE = os.path.join("data", "scraped.jsonl")
 OUT_EMB = os.path.join("data", "embeddings.npy")
 OUT_META = os.path.join("data", "metadata.json")
 
-MODEL_NAME = "all-MiniLM-L6-v2"
+MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 200
 

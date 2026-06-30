@@ -92,8 +92,8 @@ def _load_model():
         return
     try:
         from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer('all-MiniLM-L6-v2')
-        print("[model] SentenceTransformer chargé.")
+        _model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+        print("[model] SentenceTransformer chargé : paraphrase-multilingual-MiniLM-L12-v2")
     except Exception as exc:
         print(f"[model] {exc}"); _model = None
 
