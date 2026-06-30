@@ -81,7 +81,8 @@ _deepseek_cfg = None
 
 # Bloc de contact complet affiché quand l'information n'est pas trouvée
 _CONTACT_BLOCK = (
-    "Vous pouvez contacter Dakar Dem Dikk directement :\n"
+    "Je n'ai pas trouvé cette information.\n"
+    "Vous pouvez contacter notre service client directement :\n"
     "– Téléphone : +221 33 824 10 10 / +221 33 865 15 55\n"
     "– Email : info@demdikk.sn / contact@demdikk.sn\n"
     "– Adresse : Km 4,5 Avenue Cheikh Anta Diop, dépôt Ouakam, Dakar\n"
