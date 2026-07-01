@@ -450,8 +450,9 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
             f"---\n{context}\n---\n\n"
             f"Question : {question}\n\n"
             "Réponds directement à cette question en te basant uniquement sur les informations ci-dessus. "
+            "Inclus TOUS les détails pertinents du contexte (documents requis, conditions, noms exacts, numéros, etc.). "
             "Ne mentionne pas le site, le contexte, ni que tu as trouvé une information. "
-            "Va droit au but dès la première phrase."
+            "Va droit au but dès la première phrase, sans résumer ni tronquer les informations importantes."
         )
     else:
         user_prompt = (
@@ -459,8 +460,9 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
             f"---\n{context}\n---\n\n"
             f"Question : {question}\n\n"
             "Réponds directement à cette question en te basant uniquement sur les informations ci-dessus. "
+            "Inclus TOUS les détails pertinents du contexte (documents requis, conditions, noms exacts, numéros, etc.). "
             "Ne mentionne pas le site, le contexte, ni que tu as trouvé une information. "
-            "Va droit au but dès la première phrase."
+            "Va droit au but dès la première phrase, sans résumer ni tronquer les informations importantes."
         )
 
     try:
