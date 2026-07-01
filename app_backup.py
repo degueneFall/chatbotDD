@@ -776,6 +776,25 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
     city_sec = _history_last_city_section(entries)
     line_num = _history_last_line_number(entries)
     if not city_sec and not line_num:
+        # Fallback : si question très courte, enrichir avec la dernière question utilisateur
+        if len(meaningful) <= 3:
+            _Q_STARTERS = re.compile(
+                r"^(existe[- ]t[- ]il|est[- ]ce\s+qu[e']|y\s+a[- ]t[- ]il|"
+                r"qu[e']?est[- ]ce\s+qu[e']|pouvez[- ]vous|puis[- ]je|"
+                r"comment|quand|pourquoi|combien|quel(?:le)?s?\s+sont|"
+                r"que[l]?s?\s+sont|qu[e']|a[- ]t[- ]on)\s*",
+                re.IGNORECASE,
+            )
+            last_user_q = next(
+                (e.get("content", "") for e in reversed(entries)
+                 if (e.get("role") == "user" and _norm(e.get("content", "")) != _norm(q))),
+                None,
+            )
+            if last_user_q:
+                # Nettoyer la dernière question (enlever les formules d'introduction)
+                clean_ctx = _Q_STARTERS.sub("", last_user_q).strip(" ?!.,;:")
+                if clean_ctx and _norm(clean_ctx) != _norm(q):
+                    return f"{q} {clean_ctx}".strip()
         return q
 
     qn = _norm(q)
@@ -1046,6 +1065,82 @@ def ask():
                 "is_city_query": False, "is_line_query": True,
                 "needs_clarification": False,
             })
+
+    # ── 4c. Détection de question vague → demande de clarification ───────────
+    # Dictionnaire : mot-clé vague → suggestions de précision cliquables
+    _VAGUE_SUGGESTIONS = [
+        {
+            "trigger":  r'\bpi[eè]ces?\b.*\bfournir\b|\bfournir\b.*\bpi[eè]ces?\b|\bdocuments?\b.*\bfournir\b',
+            "exclude":  r'\binternational\b|\bgambie\b|\benfant\b|\bbillet\b|\br[eé]server\b|\bpass\b|\bcedeao\b',
+            "clarification": "Pour quel type de voyage avez-vous besoin des pièces ?",
+            "suggestions": [
+                {"label": "Voyage international", "query": "Existe-t-il des pièces à fournir pour les voyages internationaux ?"},
+                {"label": "Voyage avec enfant",   "query": "Quelles pièces faut-il pour voyager avec un enfant ?"},
+            ]
+        },
+        {
+            "trigger":  r'^\s*(tarif|prix|co[uû]te?)\s*$',
+            "exclude":  r'\binterurbain\b|\bbillet\b|\babonnement\b|\bcolis\b|\bfret\b|\baibd\b',
+            "clarification": "Quel tarif souhaitez-vous connaître ?",
+            "suggestions": [
+                {"label": "Billet interurbain",    "query": "Quel est le prix d'un billet pour Saint-Louis ?"},
+                {"label": "Carte d'abonnement",    "query": "Quel est le tarif de la carte d'abonnement ?"},
+                {"label": "Envoi de colis",        "query": "Quel est le prix d'envoi de colis avec Dem Dikk ?"},
+            ]
+        },
+        {
+            "trigger":  r'^\s*(horaire|heure|quand part)\s*$',
+            "exclude":  r'\bsaint.louis\b|\bthies\b|\bziguinchor\b|\bkaolack\b|\btouba\b|\bdakar\b',
+            "clarification": "Pour quelle destination cherchez-vous les horaires ?",
+            "suggestions": [
+                {"label": "Saint-Louis",  "query": "Horaires et lieu de départ pour Saint-Louis"},
+                {"label": "Thiès",        "query": "Horaires et lieu de départ pour Thiès"},
+                {"label": "Ziguinchor",   "query": "Horaires et lieu de départ pour Ziguinchor"},
+                {"label": "Kaolack",      "query": "Horaires et lieu de départ pour Kaolack"},
+            ]
+        },
+        {
+            "trigger":  r'^\s*r[eé]server?\s*$|^\s*r[eé]servation\s*$',
+            "exclude":  r'\ben\s+ligne\b|\bt[eé]l[eé]phone\b|\bapplication\b|\bapp\b',
+            "clarification": "Comment souhaitez-vous réserver ?",
+            "suggestions": [
+                {"label": "En ligne",          "query": "Comment réserver un billet interurbain en ligne ?"},
+                {"label": "Par téléphone",     "query": "Peut-on réserver par téléphone ?"},
+                {"label": "Via l'application", "query": "Comment télécharger l'application Dem Dikk ?"},
+            ]
+        },
+        {
+            "trigger":  r'^\s*services?\s*$',
+            "exclude":  r'\burbain\b|\binterurbain\b|\bcolis\b|\bfret\b|\baibd\b|\bnavette\b',
+            "clarification": "Quel service vous intéresse ?",
+            "suggestions": [
+                {"label": "Transport urbain",      "query": "Quelles sont les lignes de transport urbain ?"},
+                {"label": "Lignes interurbaines",  "query": "Comment fonctionne le service interurbain Sénégal Dem Dikk ?"},
+                {"label": "Envoi de colis",        "query": "Comment envoyer un colis avec Dem Dikk ?"},
+                {"label": "Navette aéroport AIBD", "query": "Y a-t-il une navette pour l'aéroport AIBD ?"},
+            ]
+        },
+    ]
+
+    q_lower = question.lower()
+    word_count = len(q_lower.split())
+    # N'appliquer la clarification que sur les questions courtes sans sujet précis (≤ 5 mots)
+    if word_count <= 5:
+        for entry in _VAGUE_SUGGESTIONS:
+            if re.search(entry["trigger"], q_lower, re.IGNORECASE):
+                if not re.search(entry["exclude"], q_lower, re.IGNORECASE):
+                    return jsonify({
+                        "answer":              entry["clarification"],
+                        "summary":             "Précisez votre question",
+                        "sources":             [],
+                        "results":             [],
+                        "suggestions":         entry["suggestions"],
+                        "query_type":          "clarification",
+                        "has_structured_data": False,
+                        "is_city_query":       False,
+                        "is_line_query":       False,
+                        "needs_clarification": True,
+                    })
 
     # ── 5. Recherche générale (vectorielle / mots-clés) ───────────────────────
     results = _search(question, top_k=5)

@@ -1136,11 +1136,32 @@ form.addEventListener('submit', async (e)=>{
     
     // Gérer le cas où le bot demande des précisions
     if (json.needs_clarification) {
-      const prompt = json.clarification_prompt || json.answer || "Pourriez-vous préciser votre question ?"
-      const promptHtml = (prompt || '').replace(/\n/g, '<br>')
-      const menu = await buildDynamicClarification(q, promptHtml.replace(/<br>/g, ' '))
-      renderClarificationMenu(q, placeholder, menu.why, menu.options)
-      
+      const prompt = json.answer || json.clarification_prompt || "Pourriez-vous préciser votre question ?"
+      const suggestions = Array.isArray(json.suggestions) && json.suggestions.length
+        ? json.suggestions
+        : null
+
+      if (suggestions) {
+        // Utiliser les suggestions pré-définies du backend
+        // Chaque suggestion peut être {label, query} ou une simple chaîne (rétrocompat)
+        const btns = suggestions.map(s => {
+          const label = (typeof s === 'object' && s.label) ? s.label : (typeof s === 'string' ? s : String(s))
+          const query = (typeof s === 'object' && s.query) ? s.query : label
+          const safeQuery = query.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+          return `<button class="clarif-btn" onclick="sendQuickReply('${safeQuery}')">${escapeHtml(label)}</button>`
+        }).join('')
+        placeholder.querySelector('.bubble').innerHTML = `
+          <div class="clarification-box">
+            <p style="margin-bottom:10px">${escapeHtml(prompt)}</p>
+            <div class="clarification-box-actions" style="display:flex;flex-direction:column;gap:6px">${btns}</div>
+          </div>`
+      } else {
+        // Fallback : générer via DeepSeek
+        const promptHtml = prompt.replace(/\n/g, '<br>')
+        const menu = await buildDynamicClarification(q, promptHtml.replace(/<br>/g, ' '))
+        renderClarificationMenu(q, placeholder, menu.why, menu.options)
+      }
+
       chat.scrollTop = chat.scrollHeight
       pushConversationExchange(qExpanded, json)
       return
