@@ -1626,6 +1626,11 @@ header{background:#d32f2f;color:#fff;padding:1rem 1.5rem;display:flex;align-item
 header h1{font-size:1.2rem;flex:1}
 .btn-header{background:#fff;color:#d32f2f;border:none;border-radius:6px;padding:.45rem 1rem;cursor:pointer;font-weight:600;font-size:.9rem}
 .btn-header:hover{opacity:.85}
+.btn-danger{background:#b71c1c;color:#fff}
+.btn-danger:hover{background:#7f0000}
+.btn-copy{background:none;border:none;cursor:pointer;padding:.15rem .35rem;border-radius:4px;color:#aaa;font-size:.9rem;line-height:1;transition:color .15s}
+.btn-copy:hover{color:#d32f2f}
+.copied{color:#43a047!important}
 .badge{background:#fff3;border-radius:12px;padding:.2rem .7rem;font-size:.85rem}
 main{padding:1.5rem;max-width:1100px;margin:auto}
 .filters{display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1rem;align-items:center}
@@ -1660,6 +1665,7 @@ tr:hover td{background:#fafef0}
   <span class="badge" id="totalBadge">…</span>
   <button class="btn-header" onclick="exportPDF()">⬇ PDF</button>
   <button class="btn-header" onclick="location.reload()">↺ Actualiser</button>
+  <button class="btn-header btn-danger" onclick="clearAll()">🗑 Vider la liste</button>
 </header>
 <main>
   <div class="filters">
@@ -1768,7 +1774,10 @@ function renderGroups(rows, doGroup){
     const label = g.length>1 ? `Groupe (${g.length} variantes, ${total} fois)` : `x${g[0].count}`;
     const rows2 = g.map(r => `
       <div class="group-row ${r.handled?'handled':''}">
-        <div class="group-q">${esc(r.question)}</div>
+        <div class="group-q">
+          ${esc(r.question)}
+          <button class="btn-copy" title="Copier" onclick="copyQ(this,'${esc(r.question).replace(/'/g,"\\\\'")}')">⎘</button>
+        </div>
         <div class="group-meta">${r.last_seen}<br>
           <span class="badge-count">${r.count}</span>
           ${!r.handled?`<button class="btn-sm btn-handled" onclick="markHandled('${r.id}',this)" style="margin-left:.4rem">✓ Traité</button>`:'<span style="color:#43a047;font-size:.8rem;margin-left:.4rem">✓</span>'}
@@ -1785,7 +1794,7 @@ function renderTable(rows){
   el.innerHTML = `<table>
     <thead><tr><th>Question</th><th>Raison</th><th>Vu</th><th>Dernière fois</th><th>Note</th><th>Action</th></tr></thead>
     <tbody>${rows.map(r=>`<tr class="${r.handled?'handled':''}">
-      <td>${esc(r.question)}</td><td>${esc(r.reason)}</td>
+      <td>${esc(r.question)} <button class="btn-copy" title="Copier" onclick="copyQ(this,'${esc(r.question).replace(/'/g,"\\\\'")}')">⎘</button></td><td>${esc(r.reason)}</td>
       <td><span class="badge-count">${r.count}</span></td>
       <td>${r.last_seen}</td>
       <td><input class="note-input" value="${esc(r.note||'')}" onblur="saveNote('${r.id}',this.value)"></td>
@@ -1811,6 +1820,21 @@ async function saveNote(id, note){
   if(rec) rec.note = note;
 }
 
+function copyQ(btn, text){
+  navigator.clipboard.writeText(text).then(() => {
+    btn.classList.add('copied');
+    btn.textContent = '✓';
+    setTimeout(() => { btn.classList.remove('copied'); btn.textContent = '⎘'; }, 1500);
+  });
+}
+
+async function clearAll(){
+  if(!confirm('Vider toute la liste des questions sans réponse ? Cette action est irréversible.')) return;
+  const r = await fetch(`/admin/unknown-queries/clear?token=${encodeURIComponent(TOKEN)}`,{method:'POST'});
+  if(r.ok){ ALL = []; render(); document.getElementById('totalBadge').textContent = '0 question(s)'; }
+  else alert('Erreur lors de la suppression.');
+}
+
 loadData();
 </script>
 </body>
@@ -1827,6 +1851,15 @@ def _admin_check_token(req) -> bool:
         or (req.headers.get("Authorization") or "")[7:]
     ).strip()
     return token == expected
+
+
+@app.route("/admin/unknown-queries/clear", methods=["POST"])
+def admin_uq_clear():
+    if not _admin_check_token(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    with _uq_lock:
+        _uq_save({"queries": {}})
+    return jsonify({"status": "ok"})
 
 
 @app.route("/admin/unknown-queries", methods=["GET"])
