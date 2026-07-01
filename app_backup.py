@@ -558,7 +558,9 @@ def detect_query_type(question: str) -> str:
     # Toutes les lignes
     if q in ("ligne", "lignes") or re.search(
         r'\b(toutes\s+les\s+lignes|liste\s+des\s+lignes|reseau\s+urbain|'
-        r'lignes\s+ddd|lignes\s+dem\s+dikk|voir\s+les\s+lignes)\b', q
+        r'lignes\s+ddd|lignes\s+dem\s+dikk|voir\s+les\s+lignes|'
+        r'combien\s+de\s+lignes?|nombre\s+de\s+lignes?|'
+        r'il\s+y\s+a\s+combien\s+de\s+lignes?|ya\s+combien\s+de\s+lignes?)\b', q
     ):
         return "all_lines_summary"
 

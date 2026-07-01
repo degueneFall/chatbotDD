@@ -5,6 +5,12 @@ const micBtn = document.getElementById('micBtn')
 let recognition = null
 let isListening = false
 
+function sendQuickReply(text) {
+  if (!qin || !form) return
+  qin.value = text
+  form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+}
+
 /** Derniers échanges (max 6 tours user + assistant) envoyés à /ask */
 let conversationHistory = []
 const CONVERSATION_HISTORY_MAX_MESSAGES = 12
@@ -149,6 +155,8 @@ function shouldShowMoreInfoLink(json) {
 
   // Réponses conversationnelles / politesse → pas de bouton "Plus d'infos"
   const ans = (json.answer || '').trim()
+  // Bloc "non trouvé" → jamais de bouton Plus d'infos
+  if (/^je n['']ai pas trouv[eé]/i.test(ans)) return false
   const CONVERSATIONAL = /^(je vous en prie|avec plaisir|de rien|pas de probl[eè]me|c[''']est un plaisir|enchant[eé]|bienvenue)/i
   if (CONVERSATIONAL.test(ans)) return false
   // Réponse courte sans données factuelles (prix, horaires, lignes, coordonnées...)
@@ -824,9 +832,8 @@ function askForLineDetails(lineNumber) {
 function showAllLines() {
     const qin = document.getElementById('q');
     if (!qin) return;
-    
-    qin.value = 'ligne';
-    document.getElementById('f').dispatchEvent(new Event('submit'));
+    qin.value = 'toutes les lignes';
+    document.getElementById('f').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
 }
 
 // Fonction pour obtenir l'emoji de catégorie
@@ -1041,7 +1048,7 @@ form.addEventListener('submit', async (e)=>{
   if(bye.includes(firstWord)) {
     append('user', q)
     qin.value = ''
-    append('bot', `<div class="city-header">👋 Au revoir !</div><p>Bonne journée et bon voyage avec Dakar Dem Dikk ! 🚌</p>`)
+    append('bot', `<div class="city-header">👋 Au revoir !</div><p>Bonne journée et bon voyage avec Dakar Dem Dikk ! </p>`)
     return
   }
   
@@ -1167,7 +1174,7 @@ form.addEventListener('submit', async (e)=>{
         </div>
         ${formatMoreInfoMeta(json)}
         <div class="controls">
-          <button class="small-btn" onclick="showAllLines()"><span>🚍</span> Retour aux lignes</button>
+          <button class="small-btn" onclick="showAllLines()"><span>🚍 Retour aux lignes</span></button>
         </div>`;
         placeholder.querySelector('.bubble').innerHTML = html;
         const bubble = placeholder.querySelector('.bubble');
@@ -1286,7 +1293,7 @@ form.addEventListener('submit', async (e)=>{
             </div>
             ${formatMoreInfoMeta(json)}
             <div class="controls">
-                <button class="small-btn" onclick="showAllLines()"><span>🚍</span> Retour aux lignes</button>
+                <button class="small-btn" onclick="showAllLines()"><span>🚍 Retour aux lignes</span></button>
             </div>
         `;
         placeholder.querySelector('.bubble').innerHTML = html;
@@ -1312,7 +1319,7 @@ form.addEventListener('submit', async (e)=>{
               </div>
               ${formatMoreInfoMeta(json)}
               <div class="controls">
-                <button class="small-btn" onclick="showAllLines()"><span>🚍</span> Retour aux lignes</button>
+                <button class="small-btn" onclick="showAllLines()"><span>🚍 Retour aux lignes</span></button>
               </div>
             </div>
           `;
@@ -1324,61 +1331,41 @@ form.addEventListener('submit', async (e)=>{
         const line = json.line_details;
         const stopsList = line.stops || [];
         const stopCount = line.stop_count != null ? line.stop_count : stopsList.length;
-        let html = `
-            <div class="line-details-container">
-                <div class="city-header">${line.number}</div>
-                <div class="line-main-route">
-                    <span class="line-start-big">${line.start || '–'}</span>
-                    <span class="line-arrow-big">↔</span>
-                    <span class="line-end-big">${line.end || '–'}</span>
-                </div>
-                <div class="line-category-badge">
-                    ${getCategoryEmoji(line.category)} ${line.category ? line.category.toUpperCase() : 'LIGNE'}
-                    <span class="badge">📍 Nombre d'arrêts : ${stopCount}</span>
-                </div>
-        `;
-        // Toujours afficher la section arrêts (liste ou message si vide)
-        html += `
-                <div class="stops-container">
-                    <div class="section-title">🛑 Liste des arrêts</div>
-                    <div class="stops-timeline">
-        `;
-        if (stopsList.length > 0) {
-            stopsList.forEach((stop, index) => {
-                const cleanStop = sanitizeStopDisplay(stop);
-                if (!cleanStop) return;
-                const isTerminus = (index === stopsList.length - 1);
-                html += `
-                    <div class="stop-item ${isTerminus ? 'stop-terminus' : ''}">
-                        <div class="stop-marker">${isTerminus ? '🏁' : '●'}</div>
-                        <div class="stop-content">
-                            <div class="stop-name">${cleanStop}</div>
-                            ${index === 0 ? '<div class="stop-label">Départ</div>' : index === stopsList.length - 1 ? '<div class="stop-label">Arrivée</div>' : ''}
-                        </div>
-                    </div>
-                `;
-            });
-        } else {
-            html += `
-                    <div class="stop-item">
-                        <div class="stop-marker">●</div>
-                        <div class="stop-content">
-                            <div class="stop-name">Aucun arrêt extrait pour cette ligne.</div>
-                        </div>
-                    </div>
-            `;
+        const catLabel = (line.category || '').charAt(0).toUpperCase() + (line.category || '').slice(1).toLowerCase();
+
+        let html = `<div style="margin:4px 0">`;
+        html += `<strong style="color:var(--bot,#0d9488);font-size:1rem">🚌 Ligne ${escapeHtml(line.number || '')}</strong>`;
+        html += `<div style="margin:4px 0;font-size:.9rem">${escapeHtml(line.start || '–')} ↔ ${escapeHtml(line.end || '–')}</div>`;
+        if (catLabel || stopCount) {
+          html += `<div style="font-size:.82rem;color:#666;margin-top:2px">`;
+          if (catLabel) html += catLabel;
+          if (catLabel && stopCount) html += ' · ';
+          if (stopCount) html += `${stopCount} arrêt${stopCount > 1 ? 's' : ''}`;
+          html += `</div>`;
         }
+        html += `</div>`;
+
+        if (stopsList.length > 0) {
+          html += `<ul style="list-style:none;padding:0;margin:8px 0 0;display:flex;flex-direction:column;gap:2px;font-size:.88rem">`;
+          stopsList.forEach((stop, index) => {
+            const cleanStop = sanitizeStopDisplay(stop);
+            if (!cleanStop) return;
+            const isFirst = index === 0;
+            const isLast  = index === stopsList.length - 1;
+            const marker  = isFirst ? '🔵' : isLast ? '🔴' : '–';
+            html += `<li style="padding:2px 6px">${marker} ${escapeHtml(cleanStop)}</li>`;
+          });
+          html += `</ul>`;
+        } else {
+          html += `<p style="font-size:.88rem;color:#888;margin-top:6px">Aucun arrêt extrait pour cette ligne.</p>`;
+        }
+
         html += `
-                    </div>
-                </div>
-            <div class="copy-fab-row"><button type="button" class="copy-fab" id="copy-line-details-btn" title="Copier" aria-label="Copier">${COPY_FAB_SVG}</button></div>
-            </div>
-            ${formatMoreInfoMeta(json)}
-            <div class="controls">
-                <button class="small-btn" onclick="showAllLines()">
-                    <span>🚍</span> Retour aux lignes
-                </button>
-            </div>
+          <div class="copy-fab-row"><button type="button" class="copy-fab" id="copy-line-details-btn" title="Copier" aria-label="Copier">${COPY_FAB_SVG}</button></div>
+          ${formatMoreInfoMeta(json)}
+          <div class="controls">
+            <button class="small-btn" onclick="showAllLines()"><span>🚍 Retour aux lignes</span></button>
+          </div>
         `;
         
         placeholder.querySelector('.bubble').innerHTML = html;
@@ -1436,18 +1423,6 @@ form.addEventListener('submit', async (e)=>{
       
       if (isLineQuery) {
         responseHtml = formatBusLines(cleanAnswer, targetCity)
-        responseHtml += `
-          <div class="legend">
-            <div class="legend-item">
-              <div class="legend-color" style="background: #10b981"></div>
-              <div class="legend-text">Lignes Urbaines</div>
-            </div>
-            <div class="legend-item">
-              <div class="legend-color" style="background: #f59e0b"></div>
-              <div class="legend-text">Lignes Banlieue</div>
-            </div>
-          </div>
-        `
       } else if (isCityQuery) {
         if (result.structured_data && Object.keys(result.structured_data).length > 0) {
           responseHtml += formatStructuredData(result.structured_data, targetCity)
@@ -1619,52 +1594,44 @@ function formatAllLinesSummary(json) {
     if (!json || !json.lines_summary) {
         return '<p>Informations sur les lignes non disponibles.</p>';
     }
-    
+
     const lines = json.lines_summary;
     const totalLines = json.total_lines || lines.length;
-    
-    let html = '<div class="lines-container">';
-    html += `<div class="city-header">🚍 Réseau Dakar Dem Dikk</div>`;
-    html += `<p style="margin-bottom: 20px; font-size: 1.1em;"><strong style="color: var(--bot);">${totalLines} lignes disponibles</strong></p>`;
-    
-    // Trier toutes les lignes par numéro (sans catégories)
-    const sortedLines = lines.sort((a, b) => {
-        const numA = extractLineNumberOnly(a.number);
-        const numB = extractLineNumberOnly(b.number);
-        const matchA = numA.match(/(\d+)/);
-        const matchB = numB.match(/(\d+)/);
-        const intA = matchA ? parseInt(matchA[1]) : 999;
-        const intB = matchB ? parseInt(matchB[1]) : 999;
-        // Si même numéro, comparer les lettres (ex: 502A avant 502B)
-        if (intA === intB) {
-            return numA.localeCompare(numB);
-        }
-        return intA - intB;
+
+    // Trier puis dédoublonner par numéro de ligne (garder la première occurrence)
+    const sortedLines = [...lines].sort((a, b) => {
+        const na = parseInt((extractLineNumberOnly(a.number).match(/\d+/) || [999])[0]);
+        const nb = parseInt((extractLineNumberOnly(b.number).match(/\d+/) || [999])[0]);
+        return na !== nb ? na - nb : (a.number || '').localeCompare(b.number || '');
     });
-    
-    html += `<div class="lines-list">`;
-    
-    sortedLines.forEach((line, index) => {
-        const start = sanitizeLineEndpointDisplay(line.start);
-        const end = sanitizeLineEndpointDisplay(line.end);
-        
-        html += `
-        <div class="line-item-simple" style="animation-delay: ${index * 0.03}s;">
-            <div class="line-number">${getLineEmoji(line.number)} ${line.number}</div>
-            <div class="line-route">
-                <span class="line-from">${start}</span>
-                <span class="line-arrow">↔</span>
-                <span class="line-to">${end}</span>
-            </div>
-        </div>`;
+    const seenNums = new Set();
+    const uniqueLines = sortedLines.filter(line => {
+        const num = extractLineNumberOnly(line.number);
+        if (seenNums.has(num)) return false;
+        seenNums.add(num);
+        return true;
     });
-    
-    html += `</div>`;
-    html += `<div class="meta" style="margin-top: 20px; text-align: center; padding: 15px; background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border-radius: 12px; border: 2px solid #bae6fd;">
-        <strong style="font-size: 1.1em; color: var(--bot);">📊 Total : ${totalLines} lignes</strong>
-    </div>`;
-    html += '</div>';
-    
+
+    let html = `<div style="margin:4px 0"><strong style="color:var(--bot,#0d9488)">🚍 Réseau Dakar Dem Dikk — ${uniqueLines.length} lignes</strong></div>`;
+    html += `<ul style="list-style:none;padding:0;margin:8px 0 0;display:flex;flex-direction:column;gap:3px">`;
+
+    uniqueLines.forEach(line => {
+        const num = extractLineNumberOnly(line.number);
+        let start = sanitizeLineEndpointDisplay(line.start);
+        let end   = sanitizeLineEndpointDisplay(line.end);
+        const label = `Ligne ${num} : ${start} ↔ ${end}`;
+        html += `<li>
+          <div class="line-item-simple" role="button" tabindex="0" data-linenum="${escapeHtml(num)}"
+            style="padding:5px 8px;border-radius:6px;cursor:pointer;font-size:.9rem;color:#111;
+                   transition:background .15s;display:block"
+            onmouseover="this.style.background='#f0fdf9'"
+            onmouseout="this.style.background='none'">
+            ${escapeHtml(label)}
+          </div>
+        </li>`;
+    });
+
+    html += `</ul>`;
     return html;
 }
 
@@ -1896,88 +1863,38 @@ function formatStructuredText(text, city) {
 }
 function formatBusLines(text, city = '') {
     if (!text) return '';
-    
-    // Détecter si c'est une liste de lignes
+
     const hasLines = text.includes('LIGNE') || text.includes('ligne');
-    
     if (!hasLines) {
         return `<div class="preview">${text.replace(/\n/g, '<br>')}</div>`;
     }
-    
-    // Si le texte contient beaucoup de détails d'arrêts (format brut), formater simplement
-    if (text.includes('Terminus') && text.includes('–') && text.length > 500) {
-        // C'est un format avec arrêts détaillés, afficher de manière simple
-        let html = '<div class="lines-container">';
-        html += `<div class="city-header">🚍 Réseau Dakar Dem Dikk</div>`;
-        html += `<div class="preview" style="white-space: pre-wrap; font-family: monospace; font-size: 0.9em; line-height: 1.6;">${text.replace(/\n/g, '<br>')}</div>`;
-        html += '</div>';
-        return html;
-    }
-    
-    // Organiser les lignes par catégorie (seulement urbaines et banlieue)
-    const categories = {
-        'urbaines': { title: '🏙️ Lignes Urbaines', lines: [] },
-        'banlieue': { title: '🏘️ Lignes Banlieue', lines: [] }
-    };
-    
-    // Extraire les lignes
+
+    // Extraire chaque ligne sous la forme "LIGNE X : Terminus A <-> Terminus B"
     const lines = extractAllLines(text);
-    
-    // Organiser par catégorie (seulement urbaines et banlieue)
-    lines.forEach(line => {
-        const lineLower = line.toLowerCase();
-        // Mots-clés banlieue
-        if (lineLower.includes('banlieue') || lineLower.includes('guédiawaye') || 
-            lineLower.includes('rufisque') || lineLower.includes('keur massar') ||
-            lineLower.includes('thiaroye') || lineLower.includes('daroukhane') ||
-            lineLower.includes('malika') || lineLower.includes('yenne')) {
-            categories.banlieue.lines.push(line);
-        } else if (lineLower.includes('urbaines') || lineLower.includes('urbaine') ||
-                   lineLower.includes('leclerc') || lineLower.includes('palais') ||
-                   lineLower.includes('parcelles') || lineLower.includes('liberté') ||
-                   lineLower.includes('ouakam') || lineLower.includes('taf')) {
-            // TAF TAF fait partie des urbaines
-            categories.urbaines.lines.push(line);
-        } else {
-            // Par défaut, considérer comme urbaine
-            categories.urbaines.lines.push(line);
-        }
-    });
-    
-    // Construire l'affichage
-    let html = '<div class="lines-container">';
-    
-    if (city) {
-        html += `<div class="city-header">🚍 Lignes de transport - ${city.toUpperCase()}</div>`;
-    } else {
-        html += `<div class="city-header">🚍 Réseau Dakar Dem Dikk</div>`;
+    if (!lines.length) {
+        return `<div class="preview">${text.replace(/\n/g, '<br>')}</div>`;
     }
-    
-    html += '<p>Découvrez toutes les lignes disponibles :</p>';
-    
-    // Afficher seulement urbaines et banlieue dans l'ordre
-    const categoryOrder = ['urbaines', 'banlieue'];
-    categoryOrder.forEach(key => {
-        const category = categories[key];
-        if (category && category.lines.length > 0) {
-            html += `<div class="line-category">`;
-            html += `<div class="category-title">${category.title}</div>`;
-            html += `<div class="lines-grid">`;
-            
-            category.lines.forEach(line => {
-                html += `<div class="line-card">${formatLineCard(line)}</div>`;
-            });
-            
-            html += `</div></div>`;
-        }
+
+    const title = city
+        ? `Lignes de transport — ${city.toUpperCase()}`
+        : `Réseau Dakar Dem Dikk — ${lines.length} lignes`;
+
+    let html = `<div style="margin:4px 0"><strong style="color:var(--bot,#0d9488)">${title}</strong></div>`;
+    html += `<ul style="list-style:none;padding:0;margin:8px 0 0;display:flex;flex-direction:column;gap:4px">`;
+    lines.forEach(line => {
+        const label = line.replace(/^LIGNE\s+/i, 'Ligne ').trim();
+        html += `<li>
+          <button onclick="sendQuickReply('${label.replace(/'/g, "\\'")}')"
+            style="background:none;border:none;cursor:pointer;text-align:left;
+                   padding:5px 8px;border-radius:6px;font-size:.9rem;color:#111;
+                   width:100%;transition:background .15s"
+            onmouseover="this.style.background='#f0fdf9'"
+            onmouseout="this.style.background='none'">
+            🚌 ${escapeHtml(label)}
+          </button>
+        </li>`;
     });
-    
-    // Compter le total
-    const totalLines = Object.values(categories).reduce((sum, cat) => sum + cat.lines.length, 0);
-    html += `<div class="meta" style="margin-top: 15px;"><strong>📊 Total : ${totalLines} lignes disponibles</strong></div>`;
-    
-    html += '</div>';
-    
+    html += `</ul>`;
     return html;
 }
 
@@ -2193,7 +2110,7 @@ function formatStructuredData(structuredData, city) {
   return html
 }
 
-function formatAllLinesSummary(linesData) {
+function _formatAllLinesSummary_OLD_UNUSED(linesData) {
     if (!linesData || !linesData.lines_summary) {
         return '<p>Informations sur les lignes non disponibles.</p>';
     }
@@ -2298,56 +2215,37 @@ function formatLineDetails(lineData) {
     if (!lineData) {
         return '<p>Détails de la ligne non disponibles.</p>';
     }
-    
-    let html = '<div class="line-details-container">';
-    
-    // En-tête de la ligne
-    html += `<div class="city-header">${lineData.number}</div>`;
-    html += `<div class="line-main-route">
-        <span class="line-start-big">${lineData.start}</span>
-        <span class="line-arrow-big">↔</span>
-        <span class="line-end-big">${lineData.end}</span>
-    </div>`;
-    
-    // Badge de catégorie
-    const categoryEmoji = {
-        'ter': '🚆',
-        'urbaine': '🏙️',
-        'banlieue': '🏘️',
-        'taf': '🛒',
-        'autre': '🚍'
-    }[lineData.category] || '🚍';
-    
-    html += `<div class="line-category-badge">
-        ${categoryEmoji} ${lineData.category.toUpperCase()}
-        <span class="badge">${lineData.stop_count || 0} arrêts</span>
-    </div>`;
-    
-    // Liste des arrêts
-    if (lineData.stops && lineData.stops.length > 0) {
-        html += `<div class="stops-container">`;
-        html += `<div class="section-title">🛑 ARRÊTS DE LA LIGNE</div>`;
-        html += `<div class="stops-timeline">`;
-        
-        lineData.stops.forEach((stop, index) => {
-            const isTerminus = (index === lineData.stops.length - 1);
-            html += `<div class="stop-item ${isTerminus ? 'stop-terminus' : ''}">
-                <div class="stop-marker">
-                    ${isTerminus ? '🏁' : '●'}
-                </div>
-                <div class="stop-content">
-                    <div class="stop-name">${stop}</div>
-                    ${index === 0 ? '<div class="stop-label">Départ</div>' : 
-                      index === lineData.stops.length - 1 ? '<div class="stop-label">Arrivée</div>' : ''}
-                </div>
-            </div>`;
-        });
-        
-        html += `</div></div>`;
+
+    const num  = lineData.number || '';
+    const start = lineData.start || '';
+    const end   = lineData.end   || '';
+    const cat   = (lineData.category || '').toLowerCase();
+    const catLabel = { ter: 'TER', urbaine: 'Urbaine', banlieue: 'Banlieue', taf: 'TAF', autre: 'Autre' }[cat] || cat.toUpperCase();
+    const stopCount = lineData.stop_count || (lineData.stops ? lineData.stops.length : 0);
+
+    let html = `<div style="margin:4px 0">`;
+    html += `<strong style="color:var(--bot,#0d9488);font-size:1rem"> Ligne ${escapeHtml(num)}</strong>`;
+    html += `<div style="margin:4px 0;font-size:.9rem">${escapeHtml(start)} ↔ ${escapeHtml(end)}</div>`;
+    if (catLabel || stopCount) {
+        html += `<div style="font-size:.82rem;color:#666;margin-top:2px">`;
+        if (catLabel) html += `${catLabel}`;
+        if (catLabel && stopCount) html += ` · `;
+        if (stopCount) html += `${stopCount} arrêt${stopCount > 1 ? 's' : ''}`;
+        html += `</div>`;
     }
-    
-    html += '</div>';
-    
+    html += `</div>`;
+
+    if (lineData.stops && lineData.stops.length > 0) {
+        html += `<ul style="list-style:none;padding:0;margin:8px 0 0;display:flex;flex-direction:column;gap:2px;font-size:.88rem">`;
+        lineData.stops.forEach((stop, i) => {
+            const isFirst = i === 0;
+            const isLast  = i === lineData.stops.length - 1;
+            const marker  = isFirst ? '🔵' : isLast ? '🔴' : '–';
+            html += `<li style="padding:2px 6px">${marker} ${escapeHtml(stop)}</li>`;
+        });
+        html += `</ul>`;
+    }
+
     return html;
 }
 
