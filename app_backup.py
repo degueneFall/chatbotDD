@@ -682,6 +682,16 @@ def _is_smalltalk_question(question: str) -> bool:
         qn,
     ):
         return True
+    # Présentations personnelles et questions hors-sujet DDD
+    if re.search(
+        r"(je\s+m[\u2019']appelle|mon\s+nom\s+est|je\s+suis\s+\w+|"
+        r"comment\s+tu\s+t[\u2019']appelles?|quel\s+(est\s+)?ton\s+nom|"
+        r"tu\s+es\s+qui|c[\u2019']est\s+quoi\s+ton\s+nom|"
+        r"quel\s+age|j[\u2019']ai\s+\d+\s+ans|j[\u2019']habite|"
+        r"je\s+viens\s+de|d[\u2019']ou\s+viens[-\s]tu)",
+        qn,
+    ):
+        return True
     return False
 
 
@@ -819,11 +829,22 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
     )
     if re.search(_FAST_REF, q):
         # Référence contextuelle évidente → enrichir immédiatement
+        # Exception : questions de prix/tarif → ne jamais enrichir avec un numéro de ligne
+        # (sinon "c'est combien le ticket" → "ligne 1 c'est combien le ticket" → fiche ligne)
+        _PRICE_QN_RE = re.compile(
+            r'\b(combien|tarif|prix|ticket|billet|co[uû]te?|fcfa|payer?)\b',
+            re.IGNORECASE,
+        )
+        is_price_question = bool(re.search(_PRICE_QN_RE, q))
         if city_sec and line_num:
+            if is_price_question:
+                return f"{_city_token_for_enrichment(city_sec)} {q}".strip()
             return f"{_city_token_for_enrichment(city_sec)} ligne {line_num} {q}".strip()
         if city_sec:
             return f"{_city_token_for_enrichment(city_sec)} {q}".strip()
         if line_num:
+            if is_price_question:
+                return q  # pas d'enrichissement ligne pour une question prix
             return f"ligne {line_num} {q}".strip()
 
     # ── Résolution intelligente via DeepSeek ─────────────────────────────────
@@ -854,13 +875,14 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
         # DeepSeek indisponible → fallback sur les mots-clés
         priceish = any(w in qn for w in (
             "prix", "tarif", "cout", "fcfa", "coute", "combien", "cher", "paye",
-            "horaire", "depart", "billet", "reservation",
+            "horaire", "depart", "billet", "ticket", "reservation",
         ))
         lineish = any(w in qn for w in (
             "ligne", "arret", "station", "terminus", "bus", "dessert", "desservent",
         ))
         if city_sec and line_num:
             if priceish and not lineish:
+                # Question de prix → enrichir avec la ville seulement, pas la ligne
                 return f"{_city_token_for_enrichment(city_sec)} {q}".strip()
             if lineish and not priceish:
                 return f"ligne {line_num} {q}".strip()
@@ -1004,12 +1026,18 @@ def ask():
     # Nom d'arrêt seul (ex. « Sandaga ») : pas de mot-clé « arrêt / quelle ligne »,
     # mais hors-sujet (sport, etc.) déjà filtré plus haut — on tente une correspondance arrêt.
     elif qtype not in ("all_lines_summary", "line_X") and not _is_smalltalk_question(question):
-        infer = _infer_stop_name_implicit(question)
-        if infer:
-            ml = find_lines_for_stop(infer)
-            if ml:
-                stop_for_lines = infer
-                matching_lines = ml
+        # Ne pas inférer un arrêt si la question porte sur le prix/tarif/ticket
+        _PRICE_INTENT_RE = re.compile(
+            r'\b(ticket|tarif|prix|combien|co[uû]te?|billet|payer?|fcfa)\b',
+            re.IGNORECASE,
+        )
+        if not re.search(_PRICE_INTENT_RE, question):
+            infer = _infer_stop_name_implicit(question)
+            if infer:
+                ml = find_lines_for_stop(infer)
+                if ml:
+                    stop_for_lines = infer
+                    matching_lines = ml
 
     if stop_for_lines and matching_lines:
         if not lines_stop_explicit and not _implicit_stop_card_ok(stop_for_lines, matching_lines):
@@ -1066,81 +1094,8 @@ def ask():
                 "needs_clarification": False,
             })
 
-    # ── 4c. Détection de question vague → demande de clarification ───────────
-    # Dictionnaire : mot-clé vague → suggestions de précision cliquables
-    _VAGUE_SUGGESTIONS = [
-        {
-            "trigger":  r'\bpi[eè]ces?\b.*\bfournir\b|\bfournir\b.*\bpi[eè]ces?\b|\bdocuments?\b.*\bfournir\b',
-            "exclude":  r'\binternational\b|\bgambie\b|\benfant\b|\bbillet\b|\br[eé]server\b|\bpass\b|\bcedeao\b',
-            "clarification": "Pour quel type de voyage avez-vous besoin des pièces ?",
-            "suggestions": [
-                {"label": "Voyage international", "query": "Existe-t-il des pièces à fournir pour les voyages internationaux ?"},
-                {"label": "Voyage avec enfant",   "query": "Quelles pièces faut-il pour voyager avec un enfant ?"},
-            ]
-        },
-        {
-            "trigger":  r'^\s*(tarif|prix|co[uû]te?)\s*$',
-            "exclude":  r'\binterurbain\b|\bbillet\b|\babonnement\b|\bcolis\b|\bfret\b|\baibd\b',
-            "clarification": "Quel tarif souhaitez-vous connaître ?",
-            "suggestions": [
-                {"label": "Billet interurbain",    "query": "Quel est le prix d'un billet pour Saint-Louis ?"},
-                {"label": "Carte d'abonnement",    "query": "Quel est le tarif de la carte d'abonnement ?"},
-                {"label": "Envoi de colis",        "query": "Quel est le prix d'envoi de colis avec Dem Dikk ?"},
-            ]
-        },
-        {
-            "trigger":  r'^\s*(horaire|heure|quand part)\s*$',
-            "exclude":  r'\bsaint.louis\b|\bthies\b|\bziguinchor\b|\bkaolack\b|\btouba\b|\bdakar\b',
-            "clarification": "Pour quelle destination cherchez-vous les horaires ?",
-            "suggestions": [
-                {"label": "Saint-Louis",  "query": "Horaires et lieu de départ pour Saint-Louis"},
-                {"label": "Thiès",        "query": "Horaires et lieu de départ pour Thiès"},
-                {"label": "Ziguinchor",   "query": "Horaires et lieu de départ pour Ziguinchor"},
-                {"label": "Kaolack",      "query": "Horaires et lieu de départ pour Kaolack"},
-            ]
-        },
-        {
-            "trigger":  r'^\s*r[eé]server?\s*$|^\s*r[eé]servation\s*$',
-            "exclude":  r'\ben\s+ligne\b|\bt[eé]l[eé]phone\b|\bapplication\b|\bapp\b',
-            "clarification": "Comment souhaitez-vous réserver ?",
-            "suggestions": [
-                {"label": "En ligne",          "query": "Comment réserver un billet interurbain en ligne ?"},
-                {"label": "Par téléphone",     "query": "Peut-on réserver par téléphone ?"},
-                {"label": "Via l'application", "query": "Comment télécharger l'application Dem Dikk ?"},
-            ]
-        },
-        {
-            "trigger":  r'^\s*services?\s*$',
-            "exclude":  r'\burbain\b|\binterurbain\b|\bcolis\b|\bfret\b|\baibd\b|\bnavette\b',
-            "clarification": "Quel service vous intéresse ?",
-            "suggestions": [
-                {"label": "Transport urbain",      "query": "Quelles sont les lignes de transport urbain ?"},
-                {"label": "Lignes interurbaines",  "query": "Comment fonctionne le service interurbain Sénégal Dem Dikk ?"},
-                {"label": "Envoi de colis",        "query": "Comment envoyer un colis avec Dem Dikk ?"},
-                {"label": "Navette aéroport AIBD", "query": "Y a-t-il une navette pour l'aéroport AIBD ?"},
-            ]
-        },
-    ]
-
     q_lower = question.lower()
     word_count = len(q_lower.split())
-    # N'appliquer la clarification que sur les questions courtes sans sujet précis (≤ 5 mots)
-    if word_count <= 5:
-        for entry in _VAGUE_SUGGESTIONS:
-            if re.search(entry["trigger"], q_lower, re.IGNORECASE):
-                if not re.search(entry["exclude"], q_lower, re.IGNORECASE):
-                    return jsonify({
-                        "answer":              entry["clarification"],
-                        "summary":             "Précisez votre question",
-                        "sources":             [],
-                        "results":             [],
-                        "suggestions":         entry["suggestions"],
-                        "query_type":          "clarification",
-                        "has_structured_data": False,
-                        "is_city_query":       False,
-                        "is_line_query":       False,
-                        "needs_clarification": True,
-                    })
 
     # ── 5. Recherche générale (vectorielle / mots-clés) ───────────────────────
     results = _search(question, top_k=5)

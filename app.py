@@ -246,23 +246,61 @@ def _log_unknown_query(question: str, reason: str = "not_found") -> None:
 
 _LLM_SYSTEM = (
     "Tu es un agent du service client de Dakar Dem Dikk (DDD), la société de transport en commun de Dakar. "
-    "Tu réponds directement aux questions des usagers, comme un conseiller humain bienveillant et professionnel. "
-    "RÈGLES ABSOLUES :\n"
-    "1. Utilise UNIQUEMENT les informations du contexte fourni — jamais d'inventions ni de connaissances propres.\n"
-    "2. Réponds directement et naturellement, SANS mentionner « le site », « le contexte », "
-    "« les informations disponibles » ni que tu as « trouvé » ou « consulté » quoi que ce soit.\n"
-    "3. Va droit au but dès la première phrase, sans préambule du type « D'après... », « Selon... », "
-    "« Les informations indiquent... », « D'après les informations disponibles... ».\n"
-    "4. Si le contexte ne contient PAS la réponse, réponds EXACTEMENT ce texte (sans rien ajouter ni modifier) :\n"
-    "'Je n\\'ai pas trouvé cette information.\\n"
-    "Vous pouvez contacter notre service client directement :\\n"
-    "– Téléphone : +221 33 824 10 10 / +221 33 865 15 55\\n"
-    "– Email : info@demdikk.sn / contact@demdikk.sn\\n"
-    "– Adresse : Km 4,5 Avenue Cheikh Anta Diop, dépôt Ouakam, Dakar\\n"
-    "– Horaires : Lundi – Vendredi, 08h – 17h\\n"
-    "– Site web : demdikk.sn'\n"
-    "5. Réponds toujours en français. N'utilise jamais de balises markdown (##, ###, **). "
-    "Utilise des tirets (–) pour les listes si nécessaire."
+    "Tu t'exprimes comme un conseiller humain : chaleureux, direct et professionnel.\n\n"
+
+    "TON ET STYLE\n"
+    "– Réponds naturellement, sans préambule ni formule robotique.\n"
+    "– Jamais : « D'après... », « Selon... », « En tant qu'assistant... », « Les informations indiquent... ».\n"
+    "– Si la question est simple → réponse courte et directe.\n"
+    "– Si la question est complexe → réponse détaillée, structurée seulement si vraiment utile.\n"
+    "– N'utilise JAMAIS de balises markdown (##, ###, **). Utilise des tirets (–) pour les listes.\n"
+    "– Ne termine JAMAIS par « N'hésitez pas à me demander », « Je reste à votre disposition » "
+    "ou toute formule de politesse de clôture du même type.\n\n"
+
+    "PRÉCISION ET CLARIFICATION\n"
+    "– Si la question est ambiguë ou manque d'un détail essentiel (ex : destination, ligne), "
+    "pose UNE SEULE question de précision, courte et naturelle. Exemples :\n"
+    "  • « le prix du billet » → réponds : « Pour quelle destination ? »\n"
+    "  • « les horaires » → réponds : « Pour quelle ligne ou destination ? »\n"
+    "– Ne pose jamais plusieurs questions à la fois.\n\n"
+
+    "CONTEXTE CONVERSATIONNEL\n"
+    "– L'historique de la conversation précède les informations. Utilise-le pour comprendre les références "
+    "implicites (« et le prix ? », « d'où ça part ? », « c'est tous les jours ? »).\n"
+    "– Ne redemande jamais une information déjà donnée dans la conversation.\n\n"
+
+    "QUESTIONS HORS-SUJET (sans lien avec DDD ou le transport)\n"
+    "– Si la question n'a aucun lien avec Dakar Dem Dikk, le transport, les bus ou les voyages "
+    "(ex : questions personnelles, texte aléatoire, sujets généraux), réponds simplement :\n"
+    "  « En tant qu'assistant de Dakar Dem Dikk, je suis là pour vous accompagner sur tout ce qui concerne nos services😊."
+    "jJe ne suis malheureusement pas en mesure de répondre à cette question. »\n"
+    "– Ne mentionne JAMAIS le service client, ni « je n'ai pas cette information » "
+    "pour ce type de question.\n\n"
+
+    "NE JAMAIS INVENTER — RÈGLE ABSOLUE\n"
+    "– Utilise UNIQUEMENT les informations présentes dans le contexte fourni.\n"
+    "– N'invente JAMAIS de données : prix, horaires, destinations, noms, conditions, "
+    "même si elles semblent logiques ou probables.\n"
+    "– Si le contexte indique une FOURCHETTE de prix (ex : « entre 150 et 350 FCFA »), "
+    "restitue TOUJOURS la fourchette complète. Ne choisis JAMAIS une seule valeur dans la fourchette.\n"
+    "  ✗ « Le ticket est à 350 FCFA »  →  ✓ « Le ticket est entre 150 et 350 FCFA selon le trajet. »\n"
+    "  ✗ « Le ticket coûte 150 FCFA »  →  ✓ « Le ticket varie entre 150 et 350 FCFA selon le trajet. »\n"
+    "– Si la question concerne DDD mais que l'information n'est PAS dans le contexte, "
+    "réponds EXACTEMENT cette phrase (sans rien ajouter, sans modifier) :\n"
+    "  « Je n'ai pas cette information pour le moment, je vous invite à contacter "
+    "notre service client au +221 33 824 10 10. »\n\n"
+
+    "TOUJOURS DES PHRASES COMPLÈTES\n"
+    "– Ne réponds JAMAIS avec un mot seul, un chiffre seul, une liste sèche ou un fragment.\n"
+    "– Chaque réponse doit être rédigée en phrases grammaticalement complètes.\n"
+    "– Même pour une information simple :\n"
+    "  ✗ « 5000 FCFA »  →  ✓ « Le tarif pour Saint-Louis est de 5 000 FCFA. »\n"
+    "  ✗ « Tous les jours »  →  ✓ « Les bus partent tous les jours pour cette destination. »\n\n"
+
+    "LANGUE ET FORMAT\n"
+    "– Réponds toujours en français.\n"
+    "– N'utilise jamais de balises markdown (##, ###, **).\n"
+    "– Utilise des tirets (–) pour les listes, seulement si plusieurs éléments distincts."
 )
 
 def _init_deepseek():
@@ -446,23 +484,13 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
     if history_block:
         user_prompt = (
             f"{history_block}\n\n"
-            f"Informations disponibles :\n"
-            f"---\n{context}\n---\n\n"
-            f"Question : {question}\n\n"
-            "Réponds directement à cette question en te basant uniquement sur les informations ci-dessus. "
-            "Inclus TOUS les détails pertinents du contexte (documents requis, conditions, noms exacts, numéros, etc.). "
-            "Ne mentionne pas le site, le contexte, ni que tu as trouvé une information. "
-            "Va droit au but dès la première phrase, sans résumer ni tronquer les informations importantes."
+            f"Contexte :\n---\n{context}\n---\n\n"
+            f"Question : {question}"
         )
     else:
         user_prompt = (
-            f"Informations disponibles :\n"
-            f"---\n{context}\n---\n\n"
-            f"Question : {question}\n\n"
-            "Réponds directement à cette question en te basant uniquement sur les informations ci-dessus. "
-            "Inclus TOUS les détails pertinents du contexte (documents requis, conditions, noms exacts, numéros, etc.). "
-            "Ne mentionne pas le site, le contexte, ni que tu as trouvé une information. "
-            "Va droit au but dès la première phrase, sans résumer ni tronquer les informations importantes."
+            f"Contexte :\n---\n{context}\n---\n\n"
+            f"Question : {question}"
         )
 
     try:
@@ -480,7 +508,7 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": 0.3,
-                "max_tokens": 800,
+                "max_tokens": 1200,
             },
             timeout=cfg["timeout_s"],
         )
@@ -493,6 +521,16 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
             msg = (choices[0] or {}).get("message") or {}
             text = (msg.get("content") or "").strip()
         if text:
+            # Vérification réponse tronquée : doit se terminer par une ponctuation finale
+            last_char = text.rstrip()[-1] if text.rstrip() else ""
+            if last_char not in (".", "?", "!", "»", '"', "'"):
+                # Réponse coupée → on complète proprement ou on retourne l'original
+                # Si le texte est très court (< 30 chars) c'est suspect → original
+                if len(text.strip()) < 30:
+                    return original_data
+                # Sinon on ajoute un point pour éviter un fragment affiché
+                text = text.rstrip() + "."
+
             enhanced = dict(original_data)
             enhanced["answer"] = text
             enhanced["llm_provider"] = "deepseek"
@@ -1100,6 +1138,36 @@ def _smart_search_chatbot_page(question: str) -> dict | None:
     return result
 
 
+def _fallback_presentation_page(question: str) -> dict | None:
+    """
+    Fallback ciblé sur la page présentation de DDD.
+    Utilisé pour les questions sur les directeurs, l'historique, l'actionnariat, etc.
+    Retourne directement le texte complet de la page (sans découpe) comme contexte.
+    """
+    import sys as _sys
+    url = "https://demdikk.sn/presentation/"
+    try:
+        _sys.path.insert(0, os.path.join(os.path.dirname(__file__), "data"))
+        from scrape_urls import scrape_one as _scrape_one
+        doc = _scrape_one(url)
+        if not doc or not doc.get("text"):
+            return None
+        return {
+            "answer": doc["text"],
+            "summary": "Présentation de Dakar Dem Dikk",
+            "sources": [{"title": "Présentation – Dakar Dem Dikk", "url": url, "score": 0.9}],
+            "results": [],
+            "query_type": "general",
+            "has_structured_data": False,
+            "is_city_query": False,
+            "is_line_query": False,
+            "needs_clarification": False,
+        }
+    except Exception as e:
+        print(f"[_fallback_presentation_page] Erreur : {e}", file=_sys.stderr)
+        return None
+
+
 def _fallback_from_site(question: str) -> dict | None:
     """
     Fallback universel : cherche la meilleure section sur la page chatbot-2303
@@ -1378,7 +1446,8 @@ if _original_ask:
             if any(k in qn for k in ("colis", "messagerie", "courrier")) and not rag_ok:
                 fb2 = _fallback_from_site(question)
                 if fb2:
-                    return (jsonify(fb2), *rest) if rest else jsonify(fb2)
+                    enhanced2 = _enhance_with_deepseek(fb2, question, client_history)
+                    return (jsonify(enhanced2), *rest) if rest else jsonify(enhanced2)
 
             # Fallback page officielle (scraping live) seulement si l'index n'a pas déjà répondu correctement.
             # RÈGLE : tout mot-clé qui déclenche un wants_* dans _fallback_from_site
@@ -1430,6 +1499,27 @@ if _original_ask:
                 "incident", "intemperie", "greve",
                 "retard", "panne", "maintenance", "innovation",
             )
+            # Sujets sensibles liés à la page présentation : toujours forcer le fallback
+            # sur la page presentation/ (pas chatbot-2303) car l'index peut ramener
+            # un chunk générique avec un score supérieur masquant la vraie réponse.
+            _presentation_triggers = (
+                "directeur", "directeurs", "dg ", "pdg",
+                "predecesseur", "prédécesseur", "successeur", "successeurs",
+                "avant lui", "avant elle", "qui etait", "qui était",
+                "presentation", "historique", "histoire", "creation",
+                "assane", "mbengue", "thierno", "ousmane sylla",
+                "conseil d'administration", "actionnariat",
+                "emploi", "recrutement", "candidature",
+                "fondateur", "capital social", "actionnaire",
+                "christian salvy", "moussa diagne", "dame diop",
+                "moussa diop", "omar sylla", "mamadou goudiaby",
+            )
+            if any(k in qn for k in _presentation_triggers):
+                fb_pres = _fallback_presentation_page(question)
+                if fb_pres:
+                    enhanced_pres = _enhance_with_deepseek(fb_pres, question, client_history)
+                    return (jsonify(enhanced_pres), *rest) if rest else jsonify(enhanced_pres)
+
             if any(k in qn for k in _site_triggers) and not rag_ok:
                 fb3 = _fallback_from_site(question)
                 if fb3:
@@ -1456,7 +1546,8 @@ if _original_ask:
                 # - le smart search a trouvé une section très pertinente (score >= 2 mots)
                 smart_score = (fb_smart or {}).get("sources", [{}])[0].get("score", 0)
                 if fb_smart and not rag_ok and (ans_seems_weak or smart_score >= 0.5):
-                    return (jsonify(fb_smart), *rest) if rest else jsonify(fb_smart)
+                    enhanced_smart = _enhance_with_deepseek(fb_smart, question, client_history)
+                    return (jsonify(enhanced_smart), *rest) if rest else jsonify(enhanced_smart)
 
             enhanced = _enhance_with_deepseek(data, question, client_history)
             # Logger les requêtes sans réponse
@@ -1844,14 +1935,14 @@ loadData();
 
 
 def _admin_check_token(req) -> bool:
-    expected = (os.environ.get("REFRESH_TOKEN") or "").strip()
+    expected = (os.environ.get("REFRESH_TOKEN") or "").strip().rstrip("/")
     if not expected:
         return False
     token = (
         req.args.get("token")
         or (req.get_json(silent=True) or {}).get("token")
         or (req.headers.get("Authorization") or "")[7:]
-    ).strip()
+    ).strip().rstrip("/")
     return token == expected
 
 

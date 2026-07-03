@@ -82,6 +82,24 @@ def scrape_one(url: str, timeout: int = 45) -> dict[str, Any] | None:
     raw = container.get_text("\n", strip=True) if container else ""
     # Normaliser espaces / lignes vides
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+
+    # Couper le contenu dès l'apparition du spam (liens hors-sujet injectés en bas de page)
+    _SPAM_TRIGGER_RE = re.compile(
+        r'toto\s*slot|togel|sontogel|hantutogel|slot\s*gacor|judi\s*bola|'
+        r'crossover\.org|foundvinylrecords|bubutoto|asupantoto|aishe-j\.org|'
+        r'\b(?:bbtn4d|ollo4d|pascol4d|titi4d|bwo303|bwo99|pucuk4d|rajapoker|'
+        r'naruto88|bbni4d|indobet|dpobos|DEPOBOS|mso303|licin4d|rasa4d|kari4d|'
+        r'mawar800|panen100|semibola|pakde4d|amanahtoto|flokitoto|mataramtoto|'
+        r'lingkartoto|emas55|efekjitu|ini777|benteng786|nenek188|dinasti33|apo388)\b',
+        re.IGNORECASE,
+    )
+    clean_lines = []
+    for ln in lines:
+        if re.search(_SPAM_TRIGGER_RE, ln):
+            break   # tout ce qui suit est du spam → on arrête
+        clean_lines.append(ln)
+    lines = clean_lines
+
     text = "\n".join(lines)
     text = re.sub(r"\n{3,}", "\n\n", text)
     if len(text) < 40:
