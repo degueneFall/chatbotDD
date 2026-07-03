@@ -1397,6 +1397,14 @@ if _original_ask:
                 resp_obj, *rest = original_response if isinstance(original_response, tuple) else (original_response,)
                 data = resp_obj.get_json(force=True) or {}
 
+            # AIBD : forcer le fallback navette même si app_backup a renvoyé un arrêt (Ligne TAF TAF)
+            _aibd_triggers = ("aibd", "aeroport", "navette", "blaise diagne", "blaise-diagne")
+            if any(t in qn for t in _aibd_triggers):
+                fb_aibd = _fallback_from_site(question)
+                if fb_aibd:
+                    enhanced_aibd = _enhance_with_deepseek(fb_aibd, question, client_history)
+                    return (jsonify(enhanced_aibd), *rest) if rest else jsonify(enhanced_aibd)
+
             interurban_triggers = (
                 "senegal dem dikk",
                 "sénégal dem dikk",

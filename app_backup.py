@@ -1027,11 +1027,13 @@ def ask():
     # mais hors-sujet (sport, etc.) déjà filtré plus haut — on tente une correspondance arrêt.
     elif qtype not in ("all_lines_summary", "line_X") and not _is_smalltalk_question(question):
         # Ne pas inférer un arrêt si la question porte sur le prix/tarif/ticket
-        _PRICE_INTENT_RE = re.compile(
-            r'\b(ticket|tarif|prix|combien|co[uû]te?|billet|payer?|fcfa)\b',
+        # ou sur l'AIBD/aéroport (navette, pas arrêt de bus urbain)
+        _STOP_SKIP_RE = re.compile(
+            r'\b(ticket|tarif|prix|combien|co[uû]te?|billet|payer?|fcfa|'
+            r'aibd|a[eé]roport|navette|blaise\s+diagne)\b',
             re.IGNORECASE,
         )
-        if not re.search(_PRICE_INTENT_RE, question):
+        if not re.search(_STOP_SKIP_RE, question):
             infer = _infer_stop_name_implicit(question)
             if infer:
                 ml = find_lines_for_stop(infer)
