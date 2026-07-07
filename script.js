@@ -868,7 +868,7 @@ window.onload = function() {
           <span style="font-size: 1.5em; display: inline-block; animation: wave 1s ease-in-out infinite;">👋</span>
           <span style="margin-left: 0.5rem;">Bonjour !</span>
         </div>
-        <p style="font-size: 1.05em; line-height: 1.7;"> Je suis votre assistant virtuel disponible pour répondre à toutes vos questions sur nos services😊.</p>
+        <p style="font-size: 1.05em; line-height: 1.7;"> Je suis votre assistant virtuel Maï Dem Dikk, disponible pour répondre à toutes vos questions sur nos services 😊.</p>
          </div>
       <p style="margin-top: 1.5rem; font-size: 1.1em;"><strong style="color: var(--bot);">Comment puis-je vous aider aujourd'hui ?</strong></p>
     `)
