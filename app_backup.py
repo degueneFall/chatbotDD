@@ -923,6 +923,38 @@ def ask():
         })
 
     q_norm = _norm(question)
+
+    # Présentation de la société (ex. « Dakar dem dikk » seul)
+    _company_only = q_norm in _COMPANY_NAME_TOKENS or (
+        q_norm.replace(" ", "") in {"demdikk", "ddd"}
+        and all(t in {"dakar", "dem", "dikk", "demdikk", "ddd"} for t in q_norm.split())
+    )
+    if _company_only or any(k in q_norm for k in (
+        "presentation", "présentation", "c est quoi ddd", "qu est ce que ddd",
+        "histoire de dem dikk", "parle moi de dem dikk",
+    )):
+        try:
+            import sys as _sys
+            _app_mod = _sys.modules.get("app")
+            _fb = getattr(_app_mod, "_fallback_presentation_page", None) if _app_mod else None
+            if _fb:
+                pres = _fb(question)
+                if pres and pres.get("answer"):
+                    return jsonify({
+                        "answer": pres["answer"],
+                        "summary": pres.get("summary", "Présentation de Dakar Dem Dikk"),
+                        "sources": pres.get("sources", []),
+                        "results": pres.get("results", []),
+                        "query_type": "general",
+                        "has_structured_data": False,
+                        "is_city_query": False,
+                        "is_line_query": False,
+                        "needs_clarification": False,
+                        "show_more_info": True,
+                    })
+        except Exception:
+            pass
+
     if _is_off_topic_question(question):
         return jsonify(_json_off_topic())
 

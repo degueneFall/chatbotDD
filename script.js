@@ -1088,7 +1088,7 @@ form.addEventListener('submit', async (e)=>{
   // Envoyer la question (afficher ce que l'utilisateur a tapé)
   append('user', q.replace(/\n/g,'<br>'))
   qin.value = ''
-  const placeholder = append('bot', '<div class="loading">Recherche d\'informations précises...</div>')
+  const placeholder = append('bot', '<div class="loading">...</div>')
 
   // Clarification côté interface si la question est trop vague
   if (isVagueQuestion(q)) {

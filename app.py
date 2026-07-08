@@ -269,11 +269,16 @@ _LLM_SYSTEM = (
     "implicites (« et le prix ? », « d'où ça part ? », « c'est tous les jours ? »).\n"
     "– Ne redemande jamais une information déjà donnée dans la conversation.\n\n"
 
+    "PRÉSENTATION DE LA SOCIÉTÉ\n"
+    "– Si l'utilisateur demande ce qu'est Dakar Dem Dikk, la présentation, l'histoire ou mentionne "
+    "simplement « Dakar Dem Dikk » / « DDD », utilise le contexte fourni pour présenter la société "
+    "(création, mission, réseau, services). Ne traite JAMAIS cela comme une question hors-sujet.\n\n"
+
     "QUESTIONS HORS-SUJET (sans lien avec DDD ou le transport)\n"
     "– Si la question n'a aucun lien avec Dakar Dem Dikk, le transport, les bus ou les voyages "
     "(ex : questions personnelles, texte aléatoire, sujets généraux), réponds simplement :\n"
-    "  « En tant qu'assistant de Dakar Dem Dikk, je suis là pour vous accompagner sur tout ce qui concerne nos services😊."
-    "jJe ne suis malheureusement pas en mesure de répondre à cette question. »\n"
+    "  « En tant qu'assistant de Dakar Dem Dikk, je suis là pour vous accompagner sur tout ce qui concerne nos services😊. "
+    "Je ne suis malheureusement pas en mesure de répondre à cette question. »\n"
     "– Ne mentionne JAMAIS le service client, ni « je n'ai pas cette information » "
     "pour ce type de question.\n\n"
 
@@ -1168,6 +1173,38 @@ def _fallback_presentation_page(question: str) -> dict | None:
         return None
 
 
+_COMPANY_NAME_QUERIES = frozenset({
+    "dakar dem dikk", "dem dikk", "demdikk", "ddd",
+    "dakar dem-dikk", "dakar demdikk",
+})
+
+
+def _is_presentation_query(question: str, qn: str | None = None) -> bool:
+    """
+    Questions sur la société elle-même (présentation, identité, histoire…).
+    Ex. « Dakar dem dikk », « c'est quoi DDD ? », « présentation ».
+    """
+    qn = qn if qn is not None else _norm(question)
+    if not qn:
+        return False
+    if qn in _COMPANY_NAME_QUERIES:
+        return True
+    # Nom de la société seul (tokens stopwords exclus)
+    tokens = [t for t in qn.split() if t not in ("de", "la", "le", "les", "du", "des", "sur", "a", "au")]
+    if tokens and all(t in {"dakar", "dem", "dikk", "demdikk", "ddd", "senegal", "sénégal"} for t in tokens):
+        if "dikk" in tokens or "demdikk" in tokens or "ddd" in tokens:
+            return True
+    presentation_markers = (
+        "presentation", "présentation", "presenter", "présenter",
+        "qui es tu", "qui etes vous", "qui êtes-vous", "c est quoi",
+        "qu est ce que", "quest ce que", "c est qui", "parle moi de",
+        "parlez moi de", "histoire de ddd", "histoire de dem dikk",
+        "connaitre ddd", "connaître ddd", "entreprise dem dikk",
+        "societe dem dikk", "société dem dikk",
+    )
+    return any(m in qn for m in presentation_markers)
+
+
 def _fallback_from_site(question: str) -> dict | None:
     """
     Fallback universel : cherche la meilleure section sur la page chatbot-2303
@@ -1353,6 +1390,13 @@ if _original_ask:
         else:
             client_history = _parse_client_history(body.get("conversationHistory"))
         qn = _norm(question)
+
+        # ── Présentation DDD (nom de la société, « c'est quoi DDD », etc.) ───
+        if _is_presentation_query(question, qn):
+            fb_pres = _fallback_presentation_page(question)
+            if fb_pres:
+                enhanced_pres = _enhance_with_deepseek(fb_pres, question, client_history)
+                return jsonify(enhanced_pres)
 
         # ── Détection hors-sujet / charabia (aligné sur app_backup) ───────────
         _qwords = set(qn.split())
