@@ -137,6 +137,158 @@ _OFF_TOPIC_REPLY = (
 "Je ne suis malheureusement pas en mesure de répondre à cette question."
 )
 
+# Réponses de secours si DeepSeek indisponible (API absente / erreur)
+_CONVERSATIONAL_FALLBACK = {
+    "greeting": (
+        "Bonjour ! Je suis Maï, l'assistante de Dakar Dem Dikk 😊 "
+        "Dis-moi ce que tu veux savoir sur nos lignes, horaires ou voyages."
+    ),
+    "thanks": "Avec plaisir ! Je suis là si tu as d'autres questions sur le transport DDD.",
+    "identity": (
+        "Je m'appelle Maï, l'assistante virtuelle de Dakar Dem Dikk. "
+        "Je peux t'aider pour le réseau urbain, l'interurbain, les tarifs, réservations et plus encore."
+    ),
+    "personal": (
+        "Enchanté ! Moi c'est Maï, l'assistante de Dakar Dem Dikk — "
+        "comment puis-je t'aider pour tes déplacements ?"
+    ),
+}
+
+_CONVERSATIONAL_SYSTEM = (
+    "Tu es Maï, l'assistante virtuelle chaleureuse de Dakar Dem Dikk (DDD), "
+    "société de transport à Dakar et au Sénégal.\n\n"
+    "MISSION\n"
+    "Répondre avec naturel et sympathie à une salutation, un remerciement, "
+    "une question sur ton identité, ou une présentation personnelle de l'utilisateur.\n\n"
+    "STYLE\n"
+    "– Humaine, bienveillante, concise (1 à 3 phrases).\n"
+    "– Adapte le tutoiement ou le vouvoiement à l'utilisateur.\n"
+    "– Jamais « En tant qu'assistant », jamais de listes longues.\n"
+    "– Pas de markdown (##, **). Un emoji discret max (😊).\n"
+    "– Salutation : accueille chaleureusement et propose ton aide transport.\n"
+    "– Merci : réponds avec gentillesse, sans « je reste à votre disposition ».\n"
+    "– Identité : tu es Maï ; tu aides sur bus, horaires, tarifs, voyages, abonnements…\n"
+    "– Présentation perso (« je m'appelle… ») : accueille et oriente vers l'aide transport.\n"
+)
+
+
+def _conversational_kind(question: str, qn: str | None = None) -> str | None:
+    """Salutation, remerciement, identité Maï, présentation perso — pas hors-sujet."""
+    qn = qn if qn is not None else _norm((question or "").strip())
+    if not qn:
+        return None
+    if qn in ("mai", "mai dem dikk") or re.fullmatch(r"mai(\s+dem\s+dikk)?", qn):
+        return "identity"
+    if re.search(
+        r"(comment\s+tu\s+t[\u2019']?\s*appelles?|quel\s+(est\s+)?ton\s+nom|"
+        r"tu\s+es\s+qui|qui\s+es\s+tu|c[\u2019']est\s+quoi\s+ton\s+nom|"
+        r"qui\s+etes\s+vous|presente\s+toi|que\s+peux\s+tu\s+faire|"
+        r"comment\s+peux\s+tu\s+m[\u2019']?aider)",
+        qn,
+    ):
+        return "identity"
+    if re.search(
+        r"^("
+        r"bonjour|bonsoir|salut|coucou|hello|hi|"
+        r"tu\s+vas(\s+bien)?|comment\s+(tu\s+)?vas|comment\s+ca\s+va|ca\s+va|"
+        r"tout\s+va(\s+bien)?|"
+        r"comment\s+allez[-\s]?vous|vous\s+allez\s+bien|"
+        r"bye|au\s+revoir|a\s+bientot"
+        r")[\s?!.,;:]*$",
+        qn,
+    ):
+        return "greeting"
+    if re.search(
+        r"^("
+        r"(ok\s+)?merci(\s+(beaucoup|bien|infiniment|mille\s+fois))?|"
+        r"(merci\s+)?super(\s+merci)?|(merci\s+)?parfait(\s+merci)?|"
+        r"(ok\s+)?(c[\u2019']est\s+bon|cest\s+bon|ca\s+va|c\s+est\s+bon)(\s+merci)?|"
+        r"ok(\s+merci)?(\s+bien)?|d[\u2019']accord(\s+merci)?|genial"
+        r")[\s?!.,;:]*$",
+        qn,
+    ):
+        return "thanks"
+    if re.search(r"(je\s+m[\u2019']appelle|mon\s+nom\s+est)", qn):
+        return "personal"
+    return None
+
+
+def _deepseek_simple_chat(
+    system: str,
+    user: str,
+    *,
+    max_tokens: int = 220,
+    temperature: float = 0.75,
+) -> str:
+    cfg = _init_deepseek()
+    if cfg is None:
+        return ""
+    try:
+        import requests as _requests
+        r = _requests.post(
+            f"{cfg['base_url']}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {cfg['api_key']}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": cfg["model"],
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            timeout=min(cfg["timeout_s"], 12),
+        )
+        if r.status_code >= 400:
+            return ""
+        payload = r.json() or {}
+        choices = payload.get("choices") or []
+        if choices:
+            return ((choices[0] or {}).get("message") or {}).get("content") or ""
+    except Exception:
+        pass
+    return ""
+
+
+def _generate_friendly_reply(question: str, client_history: list | None, kind: str) -> dict:
+    """Réponse conversationnelle naturelle (salutation, merci, identité…)."""
+    history_block = _format_client_history_for_prompt(client_history or [])
+    hints = {
+        "greeting": "L'utilisateur te salue. Accueille-le chaleureusement.",
+        "thanks": "L'utilisateur te remercie ou confirme. Réponds avec bienveillance.",
+        "identity": "L'utilisateur veut savoir qui tu es ou ce que tu peux faire.",
+        "personal": "L'utilisateur se présente. Accueille-le et propose ton aide transport.",
+    }
+    user_prompt = hints.get(kind, "")
+    if history_block:
+        user_prompt = f"{history_block}\n\n{user_prompt}\n\nMessage : {question}"
+    else:
+        user_prompt = f"{user_prompt}\n\nMessage : {question}"
+
+    text = _deepseek_simple_chat(_CONVERSATIONAL_SYSTEM, user_prompt.strip())
+    if not text or len(text.strip()) < 4:
+        text = _CONVERSATIONAL_FALLBACK.get(kind, _CONVERSATIONAL_FALLBACK["greeting"])
+
+    return {
+        "answer": text.strip(),
+        "summary": text.strip()[:200],
+        "bullets": [],
+        "sources": [{"title": "Maï — Assistant Dakar Dem Dikk", "url": "https://demdikk.sn/", "score": 1.0}],
+        "results": [],
+        "query_type": kind,
+        "needs_clarification": False,
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "show_more_info": False,
+        "llm_provider": "deepseek",
+        "llm_enhanced": True,
+    }
+
+
 _LOG_FILE       = os.path.join(_root_dir, "unknown_queries.log")
 _UQ_DATA_DIR    = os.path.join(_root_dir, "data")
 _UQ_JSON_FILE   = os.path.join(_UQ_DATA_DIR, "unknown_queries.json")
@@ -245,8 +397,12 @@ def _log_unknown_query(question: str, reason: str = "not_found") -> None:
         pass
 
 _LLM_SYSTEM = (
-    "Tu es un agent du service client de Dakar Dem Dikk (DDD), la société de transport en commun de Dakar. "
-    "Tu t'exprimes comme un conseiller humain : chaleureux, direct et professionnel.\n\n"
+    "Tu es Maï, l'assistante virtuelle du service client de Dakar Dem Dikk (DDD), "
+    "la société de transport en commun de Dakar. "
+    "Tu t'exprimes comme une conseillère humaine : chaleureuse, directe et professionnelle.\n\n"
+
+    "IDENTITÉ\n"
+    "– Tu t'appelles Maï. Présente-toi ainsi si on te le demande.\n\n"
 
     "TON ET STYLE\n"
     "– Réponds naturellement, sans préambule ni formule robotique.\n"
@@ -276,7 +432,7 @@ _LLM_SYSTEM = (
 
     "QUESTIONS HORS-SUJET (sans lien avec DDD ou le transport)\n"
     "– Si la question n'a aucun lien avec Dakar Dem Dikk, le transport, les bus ou les voyages "
-    "(ex : questions personnelles, texte aléatoire, sujets généraux), réponds simplement :\n"
+    "(ex :  texte aléatoire, sujets généraux), réponds simplement :\n"
     "  « En tant qu'assistant de Dakar Dem Dikk, je suis là pour vous accompagner sur tout ce qui concerne nos services😊. "
     "Je ne suis malheureusement pas en mesure de répondre à cette question. »\n"
     "– Ne mentionne JAMAIS le service client, ni « je n'ai pas cette information » "
@@ -1196,9 +1352,8 @@ def _is_presentation_query(question: str, qn: str | None = None) -> bool:
             return True
     presentation_markers = (
         "presentation", "présentation", "presenter", "présenter",
-        "qui es tu", "qui etes vous", "qui êtes-vous", "c est quoi",
-        "qu est ce que", "quest ce que", "c est qui", "parle moi de",
-        "parlez moi de", "histoire de ddd", "histoire de dem dikk",
+        "c est quoi", "qu est ce que", "quest ce que", "c est qui",
+        "parle moi de", "parlez moi de", "histoire de ddd", "histoire de dem dikk",
         "connaitre ddd", "connaître ddd", "entreprise dem dikk",
         "societe dem dikk", "société dem dikk",
     )
@@ -1391,6 +1546,10 @@ if _original_ask:
             client_history = _parse_client_history(body.get("conversationHistory"))
         qn = _norm(question)
 
+        conv_kind = _conversational_kind(question, qn)
+        if conv_kind:
+            return jsonify(_generate_friendly_reply(question, client_history, conv_kind))
+
         # ── Présentation DDD (nom de la société, « c'est quoi DDD », etc.) ───
         if _is_presentation_query(question, qn):
             fb_pres = _fallback_presentation_page(question)
@@ -1398,7 +1557,7 @@ if _original_ask:
                 enhanced_pres = _enhance_with_deepseek(fb_pres, question, client_history)
                 return jsonify(enhanced_pres)
 
-        # ── Détection hors-sujet / charabia (aligné sur app_backup) ───────────
+        # Hors-sujet strict uniquement (sport, météo, charabia — pas salutations)
         _qwords = set(qn.split())
         _transport_ctx = (
             "bus", "ligne", "transport", "voyage", "dem dikk", "demdikk",
@@ -1406,10 +1565,8 @@ if _original_ask:
             "carte", "colis", "horaire", "tarif", "prix", "contact", "agence",
             "interurbain", "touba", "thiès", "thies", "saint-louis", "fatick",
         )
-        _smalltalk = getattr(_mod, "_is_smalltalk_question", None)
         _off_topic_like = (
-            (_smalltalk and _smalltalk(question))
-            or _question_looks_gibberish_normed(qn)
+            _question_looks_gibberish_normed(qn)
             or (
                 _qwords & _OFF_TOPIC_WORDS
                 and not any(k in qn for k in _transport_ctx)
