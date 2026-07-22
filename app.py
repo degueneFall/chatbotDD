@@ -1301,10 +1301,36 @@ def _fetch_page_text(url: str) -> str | None:
 
 
 def _fallback_interurban(question: str) -> dict | None:
-    """Extrait du contenu utile depuis la page officielle réseau interurbain."""
+    """Réponse courte interurbain : intro + liste des destinations."""
     qn = _norm(question)
     if not qn:
         return None
+    try:
+        impl = sys.modules.get("app_flask_impl")
+        if impl:
+            is_overview = getattr(impl, "_is_interurban_overview_query", None)
+            fmt = getattr(impl, "_format_interurban_overview", None)
+            if is_overview and fmt and is_overview(qn, question):
+                answer = fmt()
+                return {
+                    "answer": answer,
+                    "summary": answer[:280],
+                    "bullets": [],
+                    "sources": [{
+                        "title": "Réseau Interurbain DDD",
+                        "url": "https://demdikk.sn/reseau-interurbain/",
+                        "score": 1.0,
+                    }],
+                    "results": [{"content": answer}],
+                    "query_type": "interurban_overview",
+                    "needs_clarification": False,
+                    "has_structured_data": True,
+                    "is_city_query": False,
+                    "is_line_query": False,
+                    "show_more_info": True,
+                }
+    except Exception:
+        pass
     triggers = (
         "senegal dem dikk",
         "sénégal dem dikk",
@@ -1318,38 +1344,7 @@ def _fallback_interurban(question: str) -> dict | None:
     )
     if not any(t in qn for t in triggers):
         return None
-
-    url = "https://demdikk.sn/reseau-interurbain/"
-    page_text = _fetch_page_text(url)
-    if not page_text:
-        return None
-
-    section = _extract_section(
-        page_text,
-        (
-            "Réseau Sénégal Dem Dikk",
-            "Reseau Senegal Dem Dikk",
-            "Sénégal Dem Dikk",
-            "Senegal Dem Dikk",
-            "Interurbain",
-        ),
-        max_chars=3200,
-    )
-    if not section or len(section) < 80:
-        section = page_text[:3200].strip()
-
-    return {
-        "answer": section,
-        "summary": section[:280],
-        "bullets": [],
-        "sources": [{"title": "Dakar Dem Dikk", "url": "https://demdikk.sn/", "score": 1.0}],
-        "results": [{"url": "https://demdikk.sn/", "title": "Dakar Dem Dikk", "snippet": section[:500], "full_text": section}],
-        "query_type": "general",
-        "needs_clarification": False,
-        "has_structured_data": False,
-        "is_city_query": False,
-        "is_line_query": False,
-    }
+    return None
 
 
 def _is_publicite_query(qn: str) -> bool:
@@ -1914,8 +1909,16 @@ def _is_presentation_query(question: str, qn: str | None = None) -> bool:
         "parle moi de", "parlez moi de", "histoire de ddd", "histoire de dem dikk",
         "connaitre ddd", "connaître ddd", "entreprise dem dikk",
         "societe dem dikk", "société dem dikk",
+        "mission", "vision", "valeurs", "objectif", "objectifs",
+        "histoire", "creation", "création",
     )
-    return any(m in qn for m in presentation_markers)
+    if any(m in qn for m in presentation_markers):
+        return True
+    if re.search(r"\bmission\b", qn) and any(
+        b in qn for b in ("dem dikk", "demdikk", "ddd", "dakar dem")
+    ):
+        return True
+    return False
 
 
 def _fallback_from_site(question: str) -> dict | None:
@@ -2110,7 +2113,7 @@ def _enhance_if_safe(data: dict, question: str, client_history: list | None = No
     Si DeepSeek refuse ou invente → retombe sur le texte site nettoyé.
     """
     fallback = _prepare_final_answer(data)
-    skip_types = {"all_lines_summary", "line_X", "lines_to_stop", "line_details", "city_info"}
+    skip_types = {"all_lines_summary", "line_X", "lines_to_stop", "line_details", "city_info", "interurban_overview"}
     if data.get("query_type") in skip_types or data.get("is_line_query"):
         return fallback
     cfg = _init_deepseek()
@@ -2200,8 +2203,8 @@ if _original_ask:
                 data = resp_obj.get_json(force=True) or {}
 
             # Interurbain structuré : ne pas écraser par fallback site / LLM
-            if data.get("query_type") == "city_info":
-                return (_reply(data), *rest) if rest else _reply(data)
+            if data.get("query_type") in ("city_info", "interurban_overview"):
+                return (_reply(data, enhance=False), *rest) if rest else _reply(data, enhance=False)
 
             # AIBD : forcer le fallback navette même si app_backup a renvoyé un arrêt (Ligne TAF TAF)
             _aibd_triggers = ("aibd", "aeroport", "navette", "blaise diagne", "blaise-diagne")
@@ -2222,7 +2225,7 @@ if _original_ask:
             wants_interurban = any(t in qn for t in interurban_triggers)
             fb_i = _fallback_interurban(question)
             if fb_i and wants_interurban:
-                return (_reply(fb_i), *rest) if rest else _reply(fb_i)
+                return (_reply(fb_i, enhance=False), *rest) if rest else _reply(fb_i, enhance=False)
 
             # Afrique Dem Dikk : prioritaire pour "gambie/senegal/banjul/afrique"
             af_triggers = ("afrique dem dikk", "afrique", "gambie", "gambia", "banjul", "senegal")

@@ -285,6 +285,87 @@ _TRAVEL_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_INTERURBAIN_OVERVIEW_TRIGGERS = (
+    "interurbain",
+    "interurbains",
+    "reseau-interurbain",
+    "réseau-interurbain",
+    "senegal dem dikk",
+    "sénégal dem dikk",
+    "gare routiere de dieuppeul",
+    "gare routière de dieuppeul",
+)
+
+
+def _interurban_destination_names() -> list[str]:
+    seen: set[str] = set()
+    names: list[str] = []
+    for section in INTERURBAIN_SECTIONS:
+        for ville in section.get("villes") or []:
+            key = (ville or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            names.append(_city_display_name(ville))
+    return names
+
+
+def _format_destinations_list(names: list[str]) -> str:
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} et {names[1]}"
+    return ", ".join(names[:-1]) + f" et {names[-1]}"
+
+
+def _format_interurban_overview() -> str:
+    intro = (
+        "Dakar Dem Dikk propose un service interurbain appelé Sénégal Dem Dikk, "
+        "lancé en février 2017, pour faciliter les déplacements entre les villes du pays."
+    )
+    dests = _interurban_destination_names()
+    if not dests:
+        return intro
+    return f"{intro} Destinations : {_format_destinations_list(dests)}."
+
+
+def _is_interurban_overview_query(qn: str, question: str = "") -> bool:
+    """Question générale sur le réseau interurbain (sans ville précise)."""
+    qn = (qn or "").strip()
+    if not qn or not any(t in qn for t in _INTERURBAIN_OVERVIEW_TRIGGERS):
+        return False
+    if _detect_city(qn) or _detect_line_number(question or ""):
+        return False
+    if _TRAVEL_INTENT_RE.search(question or ""):
+        return False
+    return True
+
+
+def _json_interurban_overview(question: str, q_norm: str) -> dict | None:
+    if not _is_interurban_overview_query(q_norm, question):
+        return None
+    answer = _format_interurban_overview()
+    return {
+        "answer": answer,
+        "summary": answer[:200],
+        "sources": [
+            {
+                "title": "Réseau Interurbain DDD",
+                "url": "https://demdikk.sn/reseau-interurbain/",
+                "score": 1.0,
+            }
+        ],
+        "results": [{"content": answer, "target_city": ""}],
+        "query_type": "interurban_overview",
+        "has_structured_data": True,
+        "is_city_query": False,
+        "is_line_query": False,
+        "needs_clarification": False,
+        "show_more_info": True,
+    }
+
 _INTERURBAIN_RESERVATION = (
     "Pour réserver, rendez-vous en agence, dans nos gares routières ou via "
     "l'application mobile Dakar Dem Dikk ou appeler le +221 33 824 10 10."
@@ -1283,9 +1364,76 @@ _BAD_STOP_PHRASES = frozenset(
 
 _SKIP_IMPLICIT_STOP_KEYWORDS = (
     "publicite", "partenariat", "annonce", "publicitaire", "regie publicitaire",
-    "pub", "emploi", "recrutement", "candidature", "location", "reservation",
-    "abonnement", "messagerie", "colis",
+    "pub", "emploi", "recrutement", "candidature", "location", "louer", "loue",
+    "reservation", "abonnement", "messagerie", "colis",
 )
+
+_STANDALONE_SERVICE_RE = re.compile(
+    r"\b("
+    r"louer|loue|location|louer un bus|louer des bus|"
+    r"faire de la pub|publicit[eé]|partenariat|regie publicitaire|"
+    r"recruter|recrutement|emploi|candidature|"
+    r"messagerie|expedier|exp[eé]dier|courrier|colis|"
+    r"abonnement|objet perdu|carte perdue|carte volee|"
+    r"aibd|aeroport|navette|directeur|presentation|historique"
+    r")\b",
+    re.I,
+)
+
+
+def _is_standalone_service_question(qn: str, question: str = "") -> bool:
+    """Nouveau sujet (service DDD) — ne pas coller à une ville/ligne de l'historique."""
+    qn = (qn or _norm(question)).strip()
+    if not qn:
+        return False
+    if any(k in qn for k in _SKIP_IMPLICIT_STOP_KEYWORDS):
+        return True
+    return bool(_STANDALONE_SERVICE_RE.search(qn))
+
+
+def _try_ddd_service_fallback(question: str, q_norm: str) -> dict | None:
+    """Publicité, location, messagerie… via app.py (chatbot-2303)."""
+    if not _is_standalone_service_question(q_norm, question):
+        return None
+    try:
+        import sys as _sys
+        _app_mod = _sys.modules.get("app")
+        if not _app_mod:
+            return None
+        _fb = getattr(_app_mod, "_fallback_publicite_partenariat", None)
+        if _fb and getattr(_app_mod, "_is_publicite_query", lambda q: False)(q_norm):
+            com = _fb(question)
+            if com and com.get("answer"):
+                return com
+        _fb = getattr(_app_mod, "_fallback_from_site", None)
+        if _fb:
+            com = _fb(question)
+            ans = (com.get("answer") or "").lower() if com else ""
+            junk = ("agent-ia", "guide complet des services", "je n'ai pas trouv")
+            if com and com.get("answer") and not any(j in ans for j in junk):
+                return com
+    except Exception:
+        pass
+    return None
+
+
+def _json_service_payload(question: str, q_norm: str) -> dict | None:
+    com = _try_ddd_service_fallback(question, q_norm)
+    if not com or not com.get("answer"):
+        return None
+    summary = com.get("summary", "Service Dakar Dem Dikk")[:200]
+    return {
+        "answer": com["answer"],
+        "summary": summary,
+        "sources": com.get("sources", []),
+        "results": com.get("results", []),
+        "query_type": "general",
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "needs_clarification": False,
+        "show_more_info": True,
+    }
 
 
 def _stop_candidate_is_plausible(chunk: str) -> bool:
@@ -1633,6 +1781,27 @@ _ENRICH_STOPWORDS = frozenset({
 _COMPANY_NAME_TOKENS = frozenset({"dem dikk", "demdikk", "ddd", "dakar dem dikk"})
 
 
+def _is_company_presentation_query(qn: str, question: str = "") -> bool:
+    """Présentation, mission, histoire de Dakar Dem Dikk."""
+    try:
+        import sys as _sys
+        _app_mod = _sys.modules.get("app")
+        _fn = getattr(_app_mod, "_is_presentation_query", None) if _app_mod else None
+        if _fn and _fn(question, qn):
+            return True
+    except Exception:
+        pass
+    qn = (qn or "").strip()
+    if qn in _COMPANY_NAME_TOKENS:
+        return True
+    markers = (
+        "presentation", "présentation", "mission", "vision", "valeurs",
+        "objectif", "histoire", "creation", "création",
+        "c est quoi ddd", "qu est ce que ddd", "parle moi de dem dikk",
+    )
+    return any(m in qn for m in markers)
+
+
 def _enrich_short_question_from_history(question: str, history_raw) -> str:
     """
     Résolution de contexte : question courte (mots significatifs < 3) +
@@ -1641,8 +1810,11 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
     q = (question or "").strip()
     if not q:
         return q
-    # Nom de la société seul → jamais enrichi comme suite de conversation
     qn_check = _norm(q)
+    # Nouveau sujet (location, pub, colis…) → ne jamais enrichir avec l'historique
+    if _is_standalone_service_question(qn_check, q):
+        return q
+    # Nom de la société seul → jamais enrichi comme suite de conversation
     if qn_check in _COMPANY_NAME_TOKENS or all(
         t in _COMPANY_NAME_TOKENS or t in _ENRICH_STOPWORDS
         for t in qn_check.split()
@@ -1753,13 +1925,15 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
 
     else:
         # DeepSeek indisponible → fallback sur les mots-clés
+        if _is_standalone_service_question(qn, q):
+            return q
         priceish = any(w in qn for w in (
             "prix", "tarif", "cout", "fcfa", "coute", "combien", "cher", "paye",
             "horaire", "heure", "heures", "depart", "billet", "ticket", "reservation",
         ))
         lineish = any(w in qn for w in (
-            "ligne", "arret", "station", "terminus", "bus", "dessert", "desservent",
-        ))
+            "ligne", "arret", "station", "terminus", "dessert", "desservent",
+        )) or (re.search(r"\bbus\b", qn) and not re.search(r"\blouer\b|\bloue\b|\blocation\b", qn))
         if city_sec and line_num:
             if priceish and not lineish:
                 # Question de prix → enrichir avec la ville seulement, pas la ligne
@@ -1809,6 +1983,29 @@ def ask():
 
     q_norm = _norm(question)
 
+    if _is_company_presentation_query(q_norm, question):
+        try:
+            import sys as _sys
+            _app_mod = _sys.modules.get("app")
+            _fb = getattr(_app_mod, "_fallback_presentation_page", None) if _app_mod else None
+            if _fb:
+                pres = _fb(question)
+                if pres and pres.get("answer"):
+                    return jsonify({
+                        "answer": pres["answer"],
+                        "summary": pres.get("summary", "Présentation de Dakar Dem Dikk"),
+                        "sources": pres.get("sources", []),
+                        "results": pres.get("results", []),
+                        "query_type": "general",
+                        "has_structured_data": False,
+                        "is_city_query": False,
+                        "is_line_query": False,
+                        "needs_clarification": False,
+                        "show_more_info": True,
+                    })
+        except Exception:
+            pass
+
     # Présentation de la société (ex. « Dakar dem dikk » seul)
     _company_only = q_norm in _COMPANY_NAME_TOKENS or (
         q_norm.replace(" ", "") in {"demdikk", "ddd"}
@@ -1840,55 +2037,28 @@ def ask():
         except Exception:
             pass
 
-    # Ville interurbaine — avant réservation / publicité générique (« comment réserver touba »)
+    # Réseau interurbain (vue d'ensemble) — réponse courte : intro + destinations
+    _overview_payload = _json_interurban_overview(question, q_norm)
+    if _overview_payload:
+        return jsonify(_overview_payload)
+
+    # Services DDD (location, pub, colis…) — avant ville si nouveau sujet explicite
+    _service_payload = _json_service_payload(question, q_norm)
+    if _service_payload:
+        return jsonify(_service_payload)
+
+    # Ville interurbaine — sauf si intention voyage explicite ou ville seule
     _city_payload = _json_interurban_city(question, q_norm, city_hint)
     if _city_payload:
-        return jsonify(_city_payload)
+        # Ne pas répondre « ville » si la question est un autre service DDD
+        if not _is_standalone_service_question(q_norm, question_raw):
+            return jsonify(_city_payload)
 
-    # Services DDD (publicité, partenariat…) — avant inférence arrêt / hors-sujet
+    # Services DDD (réservation liée à une ville déjà dans la question enrichie)
     if any(k in q_norm for k in _SKIP_IMPLICIT_STOP_KEYWORDS):
-        try:
-            import sys as _sys
-            _app_mod = _sys.modules.get("app")
-            _fb = getattr(_app_mod, "_fallback_publicite_partenariat", None) if _app_mod else None
-            if _fb and _app_mod and getattr(_app_mod, "_is_publicite_query", lambda q: False)(q_norm):
-                com = _fb(question)
-                if com and com.get("answer"):
-                    return jsonify({
-                        "answer": com["answer"],
-                        "summary": com.get("summary", "Partenariat et publicité DDD")[:200],
-                        "sources": com.get("sources", []),
-                        "results": com.get("results", []),
-                        "query_type": "general",
-                        "has_structured_data": False,
-                        "is_city_query": False,
-                        "is_line_query": False,
-                        "needs_clarification": False,
-                        "show_more_info": True,
-                    })
-            _fb = getattr(_app_mod, "_fallback_from_site", None) if _app_mod else None
-            if _fb:
-                com = _fb(question)
-                ans = (com.get("answer") or "").lower() if com else ""
-                junk = (
-                    "agent-ia", "guide complet des services",
-                    "je n'ai pas trouv",
-                )
-                if com and com.get("answer") and not any(j in ans for j in junk):
-                    return jsonify({
-                        "answer": com["answer"],
-                        "summary": com.get("summary", "Partenariat et publicité DDD")[:200],
-                        "sources": com.get("sources", []),
-                        "results": com.get("results", []),
-                        "query_type": "general",
-                        "has_structured_data": False,
-                        "is_city_query": False,
-                        "is_line_query": False,
-                        "needs_clarification": False,
-                        "show_more_info": True,
-                    })
-        except Exception:
-            pass
+        _service_payload = _json_service_payload(question, q_norm)
+        if _service_payload:
+            return jsonify(_service_payload)
 
     if _is_off_topic_question(question):
         return jsonify(_json_off_topic())
@@ -1986,10 +2156,15 @@ def ask():
             r'\b(ticket|tarif|prix|combien|co[uû]te?|billet|payer?|fcfa|'
             r'aibd|a[eé]roport|navette|blaise\s+diagne|'
             r'publicite|publicité|partenariat|annonce|publicitaire|regie|pub|'
-            r'emploi|recrutement|location|reservation|abonnement)\b',
+            r'emploi|recrutement|location|reservation|abonnement|'
+            r'mission|presentation|présentation|vision|valeurs|objectif|histoire|creation)\b',
             re.IGNORECASE,
         )
-        if not re.search(_STOP_SKIP_RE, question) and not _should_skip_implicit_stop_inference(q_norm):
+        if (
+            not re.search(_STOP_SKIP_RE, question)
+            and not _should_skip_implicit_stop_inference(q_norm)
+            and not _is_company_presentation_query(q_norm, question)
+        ):
             infer = _infer_stop_name_implicit(question)
             if infer:
                 ml = find_lines_for_stop(infer)

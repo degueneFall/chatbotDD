@@ -276,12 +276,17 @@ function isVagueQuestion(q) {
   if (norm === 'je veux voyager' || norm === 'je veux voyager comment faire' || norm === 'comment faire') return true
 
   // Requêtes "marque/pays" sans intention (ex: "senegal dem dikk", "dakar dem dikk")
+  // Présentation / mission / histoire de l'entreprise → envoyer au backend
+  if (/\b(mission|presentation|presentations|histoire|vision|valeurs|objectif|objectifs|creation|entreprise|societe)\b/.test(norm)) {
+    return false
+  }
   const intentWords = [
     'horaire', 'horaires', 'prix', 'tarif', 'tarifs', 'reservation', 'réservation', 'reserver', 'réserver',
     'billet', 'ticket', 'ligne', 'lignes', 'abonnement', 'abonnements', 'tek', 'colis', 'messagerie', 'contact',
     'adresse', 'localisation', 'localise', 'situe', 'trouve', 'siege', 'bureau',
     'emploi', 'recrutement', 'postuler', 'stage',
-    'afrique', 'gambie', 'banjul', 'international'
+    'afrique', 'gambie', 'banjul', 'international',
+    'mission', 'presentation', 'histoire', 'vision', 'valeurs', 'objectif', 'interurbain',
   ]
   const hasIntent = intentWords.some(w => norm.includes(w))
   if (!hasIntent) {
