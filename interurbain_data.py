@@ -204,15 +204,18 @@ INTERURBAIN_SECTIONS = [
         'villes': [
 'saint-louis'
             ],
-        'prix': '5000 FCFA',
-        'horaires': [],
+        'prix': '5 000 FCFA',
+        'horaires': [
+            'Départ Dakar (Terminus Liberté 5) : 07h00 et 14h00',
+            'Départ Saint-Louis (Pikine Guinaw rail, station OIL LYBIA) : 07h00 et 14h00',
+        ],
         'jours': [
 'Tous les jours'
             ],
-        'depart': 'Dakar 7h et 14h Terminus Liberté 5',
+        'depart': 'Terminus Liberté 5, Dakar',
         'lieux_contact': [
 {
-                'lieu': 'Saint Louis 7h et 14h Pikine Guinaw rail derrière la station OIL LYBIA',
+                'lieu': 'Pikine Guinaw rail, derrière la station OIL LYBIA',
                 'tel': '78 620 04 01'
             }
             ]
@@ -277,13 +280,17 @@ INTERURBAIN_SECTIONS = [
 'touba'
             ],
         'prix': '4 000 FCFA',
+        'itineraire': 'Dakar – Péage – Ngabou – Ndam – Touba',
         'horaires': [
-'7h et 15h'
-            ],
+            'Départ Dakar (Liberté 5) : 07h00 et 15h00',
+            'Départ Touba (Rond-Point 28) : 07h00 et 15h00',
+            'Arrivée estimée : 11h00 max (bus 07h), 18h00 max (bus 15h)',
+        ],
         'jours': [
 'Tous les jours sauf Mercredi'
             ],
-        'depart': 'Dakar Terminus Liberté 5',
+        'depart': 'Liberté 5, Dakar',
+        'arrivee': 'Rond-Point 28, face à la Pharmacie Serigne Fallou Mbacké, Touba',
         'lieux_contact': [
 {
                 'lieu': 'Touba 28 Pharmacie Sérigne Fallou Mbacké',

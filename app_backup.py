@@ -12,7 +12,7 @@ import time
 import unicodedata
 import urllib.parse
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 
 # ── Données interurbain ───────────────────────────────────────────────────────
 try:
@@ -27,6 +27,17 @@ except ImportError:
     def get_section_by_ville(v): return None
     def get_prix_for_ville(v): return None
     def get_contact_for_ville(v): return []
+
+try:
+    from interurbain_routes import (
+        get_route_info,
+        format_itinerary_prose,
+        format_duration_prose,
+    )
+except ImportError:
+    def get_route_info(v): return {}
+    def format_itinerary_prose(itin, titre): return ""
+    def format_duration_prose(durees, departs=None): return ""
 
 # ── Données lignes urbaines ───────────────────────────────────────────────────
 try:
@@ -175,20 +186,32 @@ _OFF_TOPIC_REPLY_TEXT = (
     "Je ne suis malheureusement pas en mesure de répondre à cette question."
 )
 _TRANSPORT_CONTEXT_MARKERS = (
-    "bus", "ligne", "transport", "voyage", "dem dikk", "demdikk",
+    "bus", "ligne", "lignes", "arret", "arrets", "transport", "voyage",
+    "dem dikk", "demdikk", "ddd",
     "reservation", "billet", "ticket", "abonnement", "tek dem",
-    "carte", "colis", "horaire", "tarif", "prix", "contact", "agence",
+    "carte", "colis", "horaire", "horaires", "tarif", "prix", "contact", "agence",
     "interurbain", "touba", "thies", "thiès", "saint-louis", "fatick",
+    "bagage", "bagages", "remboursement", "annulation", "report",
+    "gare", "terminus", "destination", "navette", "aibd", "aeroport",
+    "perturbation", "retard", "greve",
 )
 
 
 def _is_off_topic_question(question: str) -> bool:
+    """Délègue à app.py si chargé (règles hors-sujet avec contexte transport)."""
+    try:
+        import sys as _sys
+        _app_mod = _sys.modules.get("app")
+        _fn = getattr(_app_mod, "_is_strict_off_topic", None) if _app_mod else None
+        if _fn:
+            return _fn(question)
+    except Exception:
+        pass
     qn = _norm(question)
     if not qn:
         return False
-    # Politesse / banalités : même réponse que le hors-sujet métier (pas de RAG ni fiche ligne).
     if _is_smalltalk_question(question):
-        return True
+        return False
     if _question_looks_gibberish_normed(qn):
         return True
     if not (set(qn.split()) & _OFF_TOPIC_TOKENS):
@@ -248,31 +271,839 @@ def _vector_search(query: str, top_k: int = 5) -> list:
 
 # ── Formatage réponse ville ───────────────────────────────────────────────────
 def _format_city_answer(section: dict, ville: str) -> str:
-    titre    = section.get("titre", ville.upper())
-    prix_raw = section.get("prix")
-    horaires = section.get("horaires", [])
-    jours    = section.get("jours", [])
-    depart   = section.get("depart", "Terminus Liberté 5")
-    contacts = section.get("lieux_contact", [])
+    """Legacy structuré (▸) — préférer _format_city_response_prose."""
+    return _format_city_response_prose(section, ville, aspect="full")
 
-    prix_str = (" / ".join(f"{k}: {v}" for k, v in prix_raw.items())
-                if isinstance(prix_raw, dict) else (prix_raw or "–"))
 
-    out = [f"### {titre}",
-           f"▸ Prix : {prix_str}",
-           f"▸ Départ : {depart}"]
-    if jours:
-        out.append(f"▸ Jours : {', '.join(jours)}")
-    if horaires:
-        out.append(f"▸ Horaires : {' | '.join(horaires)}")
-    if contacts:
-        out.append("▸ Contact sur place :")
-        for c in contacts:
-            entry = f"  – {c.get('lieu', '')}"
-            if c.get('tel'):
-                entry += f" – Tél : {c['tel']}"
-            out.append(entry)
-    return "\n".join(out)
+_TRAVEL_INTENT_RE = re.compile(
+    r"\b("
+    r"je\s+veux\s+aller|j\s*aimerais\s+aller|je\s+souhaite\s+aller|"
+    r"comment\s+aller|voyage\s+(?:pour|vers|a|à)|"
+    r"partir\s+(?:pour|vers|a|à)|partez\s+(?:a|à|vers)|"
+    r"se\s+rendre\s+(?:a|à)|destination\s+"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_INTERURBAIN_RESERVATION = (
+    "Pour réserver, rendez-vous en agence, dans nos gares routières ou via "
+    "l'application mobile Dakar Dem Dikk ou appeler le +221 33 824 10 10."
+)
+_INTERURBAIN_RESERVATION_SHORT = (
+    "Réservation en agence, en gare routière ou via l'appli Dakar Dem Dikk ou appeler le +221 33 824 10 10."
+)
+_SERVICE_CLIENT_TEL = "+221 33 824 10 10"
+
+
+def _city_name_tokens(section: dict) -> set[str]:
+    names: set[str] = set()
+    for v in section.get("villes") or []:
+        vn = _norm(v)
+        names.add(vn)
+        names.add(vn.replace("-", " "))
+    tit = _norm(section.get("titre") or "")
+    if tit:
+        names.add(tit)
+        names.add(tit.replace("-", " "))
+    return names
+
+
+def _is_city_only_query(qn: str, section: dict) -> bool:
+    """Ex. « touba » seul — pas une intention de voyage détaillée."""
+    city_names = _city_name_tokens(section)
+    qnh = qn.replace("-", " ")
+    tokens = [w for w in qnh.split() if w not in _ENRICH_STOPWORDS and len(w) >= 2]
+    if not tokens:
+        return False
+    if all(t in city_names for t in tokens):
+        return True
+    return False
+
+
+def _city_query_aspect(qn: str, question: str) -> str:
+    """Aspect demandé — réponse minimale, sans surcharge."""
+    if _TRAVEL_INTENT_RE.search(question or "") or re.search(
+        r"\b(voyage|partir|partez|se\s+rendre)\b", qn, re.I
+    ):
+        return "full"
+    if any(w in qn for w in ("reserver", "reservation", "reservez", "billet", "ticket")):
+        return "reservation"
+    if any(w in qn for w in ("horaire", "heures", "heure")):
+        return "horaires"
+    if any(w in qn for w in ("prix", "tarif", "cout", "combien", "fcfa", "cher", "coute")):
+        return "prix"
+    if any(w in qn for w in ("itineraire", "trajet", "route", "passage")):
+        return "itineraire"
+    if any(w in qn for w in ("arrivee", "contact", "telephone", "tel")):
+        return "contact"
+    return "clarify"
+
+
+def _interurban_itinerary_from_site(city_title: str) -> str:
+    """Itinéraire officiel depuis chatbot-2303 (ou section locale)."""
+    info = get_route_info(city_title)
+    if info.get("itineraire"):
+        return info["itineraire"]
+    try:
+        import sys as _sys
+        app_mod = _sys.modules.get("app")
+        fetch = getattr(app_mod, "_fetch_page_text", None) if app_mod else None
+        if not fetch:
+            return ""
+        text = fetch("https://demdikk.sn/reseau-interurbain/") or ""
+        if not text:
+            return ""
+        ct = (city_title or "").upper().strip()
+        idx = text.upper().find(ct)
+        if idx < 0:
+            return ""
+        chunk = text[idx: idx + 2500]
+        for line in chunk.splitlines():
+            ln = line.strip()
+            if re.match(r"^itin[eé]raire\s*:", ln, re.I):
+                return re.sub(r"^itin[eé]raire\s*:\s*", "", ln, flags=re.I).strip()
+            if re.match(r"^itin[eé]raire\b", ln, re.I) and "–" in ln:
+                return re.sub(r"^itin[eé]raire\s*", "", ln, flags=re.I).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _city_route_meta(section: dict, ville: str) -> dict:
+    """Fusionne itinéraire / durées : chatbot-2303 + section locale."""
+    route = get_route_info(ville) or {}
+    itin = (section.get("itineraire") or "").strip() or (route.get("itineraire") or "").strip()
+    durees = dict(route.get("durees") or {})
+    if not durees:
+        _, durations = _split_horaires_raw(
+            [str(h).strip() for h in (section.get("horaires") or []) if str(h).strip()]
+        )
+        durees = durations
+    return {"itineraire": itin, "durees": durees}
+
+
+def _horaires_detail_places(horaires: list[str]) -> bool:
+    blob = " ".join(horaires).lower()
+    return "depart" in blob or "départ" in blob or "arrivee" in blob or "arrivée" in blob
+
+
+_RE_HORAIRE_TIME = re.compile(r"(\d{1,2})h(\d{2})?")
+
+
+def _time_to_minutes(token: str) -> int | None:
+    m = _RE_HORAIRE_TIME.search((token or "").strip())
+    if not m:
+        return None
+    return int(m.group(1)) * 60 + int(m.group(2) or "0")
+
+
+def _format_trip_duration(minutes: int) -> str:
+    if minutes <= 0:
+        return ""
+    hours, mins = divmod(minutes, 60)
+    if mins == 0:
+        return f"{hours} h" if hours != 1 else "1 h"
+    if hours == 0:
+        return f"{mins} min"
+    return f"{hours} h {mins:02d}"
+
+
+def _parse_arrival_duration_pairs(line: str) -> dict[str, str]:
+    """Ex. « 11h00 max (bus 07h) » → {'07h00': '4 h'}."""
+    out: dict[str, str] = {}
+    for m in re.finditer(
+        r"(\d{1,2}h\d{0,2})\s*max\s*\(\s*bus\s+(\d{1,2}h\d{0,2})\s*\)",
+        line,
+        re.I,
+    ):
+        arr_m = _time_to_minutes(m.group(1))
+        dep_tok = m.group(2)
+        dep_m = _time_to_minutes(dep_tok)
+        if arr_m is None or dep_m is None or arr_m < dep_m:
+            continue
+        dep_norm = dep_tok if re.search(r"h\d{2}", dep_tok) else f"{dep_tok}00"
+        if not re.search(r"h\d{2}", dep_norm):
+            dep_norm = dep_norm.replace("h", "h") + "00"
+        dur = _format_trip_duration(arr_m - dep_m)
+        if dur:
+            out[dep_norm] = dur
+            # clé aussi sans minutes (07h ↔ 07h00)
+            short = re.match(r"(\d{1,2}h)\d{0,2}", dep_norm)
+            if short:
+                out[short.group(1)] = dur
+    return out
+
+
+def _split_horaires_raw(horaires: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Sépare lignes de départ et durées calculables depuis « arrivée estimée »."""
+    depart_lines: list[str] = []
+    durations: dict[str, str] = {}
+    for line in horaires:
+        if re.search(r"arriv[eé]e\s+estim", line, re.I):
+            durations.update(_parse_arrival_duration_pairs(line))
+        else:
+            depart_lines.append(line)
+    return depart_lines, durations
+
+
+def _normalize_time_token(token: str) -> str:
+    t = (token or "").strip().lower()
+    m = re.match(r"(\d{1,2})h(\d{2})?", t)
+    if not m:
+        return t
+    return f"{int(m.group(1)):02d}h{m.group(2) or '00'}"
+
+
+def _parse_depart_horaire_line(line: str) -> tuple[str, list[str]] | None:
+    m = re.match(r"^[Dd][ée]part\s+(.+?)\s*:\s*(.+)$", (line or "").strip())
+    if not m:
+        return None
+    place = m.group(1).strip()
+    tail = m.group(2).strip()
+    times = _extract_times_from_text(tail)
+    # Legacy : « Départ Dakar : Dakar Terminus Liberté 5 à 7h »
+    if re.fullmatch(r"Dakar", place, re.I) and re.search(r"dakar|terminus|libert", tail, re.I):
+        place = _normalize_dakar_place(tail) or tail
+    return place, times
+
+
+def _ville_key_from_query(q_norm: str, section: dict) -> str:
+    qnh = q_norm.replace("-", " ")
+    for v in section.get("villes") or []:
+        vn = _norm(v).replace("-", " ")
+        if re.search(r"\b" + re.escape(vn) + r"\b", qnh):
+            return v
+    return section["villes"][0]
+
+
+def _place_label_for_prose(place: str, titre_disp: str) -> str:
+    p = place.strip()
+    pm = re.match(r"^Dakar\s*\(([^)]+)\)$", p, re.I)
+    if pm:
+        return f"{pm.group(1).strip()} (Dakar)"
+    pm = re.match(rf"^{re.escape(titre_disp)}\s*\(([^)]+)\)$", p, re.I)
+    if pm:
+        return f"{pm.group(1).strip()} ({titre_disp})"
+    if re.search(r"\bdakar\b", p, re.I):
+        return p
+    return f"{p} ({titre_disp})"
+
+
+def _format_duration_phrase(times: list[str], durations: dict[str, str]) -> str:
+    if not times or not durations:
+        return ""
+    pairs: list[tuple[str, str]] = []
+    for t in times:
+        norm = _normalize_time_token(t)
+        short = re.match(r"(\d{1,2}h)", norm)
+        dur = durations.get(norm) or (short and durations.get(short.group(1)))
+        if dur:
+            pairs.append((norm, dur))
+    if not pairs:
+        return ""
+    if len(pairs) == 1:
+        return f", comptez environ {pairs[0][1]} de route"
+    chunks = [f"{dur} pour le {tm}" for tm, dur in pairs]
+    return ", comptez environ " + " et ".join(chunks)
+
+
+def _format_times_list(times: list[str]) -> str:
+    norms = [_normalize_time_token(t) for t in times]
+    if len(norms) == 1:
+        return norms[0]
+    if len(norms) == 2:
+        return f"{norms[0]} et {norms[1]}"
+    return ", ".join(norms[:-1]) + f" et {norms[-1]}"
+
+
+def _horaires_to_prose(
+    horaires: list[str],
+    jours: list[str],
+    titre_disp: str,
+    *,
+    include_circulation: bool = True,
+) -> list[str]:
+    """Horaires interurbains en phrases, durée calculée si disponible."""
+    depart_lines, durations = _split_horaires_raw(horaires)
+    sentences: list[str] = []
+
+    if include_circulation and jours:
+        jtxt = jours[0] if len(jours) == 1 else ", ".join(jours)
+        jl = jtxt[0].lower() + jtxt[1:] if len(jtxt) > 1 else jtxt.lower()
+        if jl.startswith("tous"):
+            sentences.append(f"Les bus circulent {jl}")
+        else:
+            sentences.append(f"Circulation : {jtxt}")
+
+    dakar_parts: list[str] = []
+    retour_parts: list[str] = []
+    for line in depart_lines:
+        parsed = _parse_depart_horaire_line(line)
+        if not parsed:
+            continue
+        place, times = parsed
+        if not times:
+            continue
+        label = _place_label_for_prose(place, titre_disp)
+        times_txt = _format_times_list(times)
+        is_dakar = bool(re.search(r"\bdakar\b", place, re.I)) and titre_disp.lower() not in place.lower()
+        dur_hint = _format_duration_phrase(times, durations) if is_dakar else ""
+        chunk = f"depuis {label} à {times_txt}{dur_hint}"
+        if is_dakar:
+            dakar_parts.append(chunk)
+        else:
+            retour_parts.append(chunk)
+
+    if dakar_parts:
+        sentences.append(
+            "Départs " + dakar_parts[0]
+            if len(dakar_parts) == 1
+            else "Départs " + " ; ".join(dakar_parts)
+        )
+    if retour_parts:
+        sentences.append(
+            "Au retour, " + retour_parts[0]
+            if len(retour_parts) == 1
+            else "Au retour, " + " ; ".join(retour_parts)
+        )
+
+    return sentences
+
+
+def _join_prose_sentences(parts: list[str]) -> str:
+    out: list[str] = []
+    for p in parts:
+        s = (p or "").strip()
+        if not s:
+            continue
+        if not s.endswith((".", "!", "?")):
+            s += "."
+        out.append(s)
+    return " ".join(out)
+
+
+def _legacy_horaires_from_section(section: dict) -> list[str]:
+    """Reconstitue des lignes horaires propres quand seuls depart / lieux_contact existent."""
+    out: list[str] = []
+    depart = (section.get("depart") or "").strip()
+    titre = (section.get("titre") or "").strip()
+    if depart:
+        m = re.search(
+            r"^(?:dakar\s+)?(\d+h(?:\s*et\s*\d+h)?)\s+(.+)$", depart, re.I
+        )
+        if m:
+            times = m.group(1).replace(" ", " ").replace("het", "h et ")
+            place = m.group(2).strip()
+            out.append(f"Départ Dakar ({place}) : {times}")
+        else:
+            out.append(f"Départ Dakar : {depart}")
+    for c in section.get("lieux_contact") or []:
+        lieu = (c.get("lieu") or "").strip()
+        if not lieu:
+            continue
+        m = re.match(
+            r"^[A-Za-zÀ-ÿ\s\-']+?\s+(\d+h(?:\s*et\s*\d+h)?)\s+(.+)$", lieu, re.I
+        )
+        if m:
+            out.append(f"Départ {titre.title()} ({m.group(2).strip()}) : {m.group(1)}")
+        elif not out:
+            out.append(f"Point {titre.title()} : {lieu}")
+    return out
+
+
+def _city_display_name(ville: str) -> str:
+    v = (ville or "").strip().lower()
+    names = {
+        "saint-louis": "Saint-Louis",
+        "kebemer": "Kébémer",
+        "kedougou": "Kédougou",
+        "sedhiou": "Sédhiou",
+        "ourossogui": "Ourossogui",
+        "ziguinchor": "Ziguinchor",
+        "velingara": "Vélingara",
+        "tivaouane": "Tivaouane",
+        "tambacounda": "Tambacounda",
+        "ndioum": "Ndioum",
+    }
+    if v in names:
+        return names[v]
+    return (ville or "").replace("-", " ").strip().title()
+
+
+def _format_prix_display(prix: str | None) -> str:
+    if not prix:
+        return ""
+    m = re.match(r"(\d[\d\s]*)\s*(FCFA)?", str(prix).strip(), re.I)
+    if not m:
+        return str(prix).strip()
+    num = re.sub(r"\s", "", m.group(1))
+    try:
+        return f"{int(num):,}".replace(",", " ") + " FCFA"
+    except ValueError:
+        return str(prix).strip()
+
+
+def _extract_times_from_text(text: str) -> list[str]:
+    if not text:
+        return []
+    seen: set[int] = set()
+    out: list[str] = []
+    for m in re.finditer(r"(\d{1,2})h(\d{2})?", text, re.I):
+        h = int(m.group(1))
+        if h in seen:
+            continue
+        seen.add(h)
+        out.append(f"{h}h" if not m.group(2) else f"{h}h{m.group(2)}")
+    return out
+
+
+def _normalize_dakar_place(raw: str) -> str:
+    p = re.sub(r"\d{1,2}h\d{0,2}", " ", raw or "", flags=re.I)
+    p = re.sub(r"\bet\b", " ", p, flags=re.I)
+    p = re.sub(r"\s+", " ", p).strip()
+    p = re.sub(r"^Dakar\s+", "", p, flags=re.I)
+    p = re.sub(r"\s*à\s+\d{1,2}h\s*$", "", p, flags=re.I).strip()
+    p = re.sub(r",?\s*Dakar\s*$", "", p, flags=re.I).strip()
+    p = re.sub(r"^Terminus\s+", "", p, flags=re.I).strip()
+    p = re.sub(r"^Dakar\s+Terminus\s+", "", p, flags=re.I).strip()
+    if re.search(r"libert", p, re.I):
+        return "Liberté 5"
+    if re.search(r"colobane", p, re.I):
+        return "gare de Colobane"
+    if re.search(r"grand yoff", p, re.I):
+        return "HLM Grand Yoff"
+    if re.search(r"hlm", p, re.I) and "yoff" in p.lower():
+        return "HLM Grand Yoff"
+    return p.strip()
+
+
+def _parse_legacy_depart_field(depart: str) -> tuple[str, list[str]]:
+    if not depart:
+        return "", []
+    times = _extract_times_from_text(depart)
+    place = _normalize_dakar_place(depart)
+    return place, times
+
+
+def _shorten_city_place(place: str) -> str:
+    p = (place or "").strip()
+    if "," in p and re.search(r"quartier", p, re.I):
+        p = p.split(",")[0].strip()
+    for sep in (" route ", " Route ", " en face ", " derrière ", " près "):
+        if sep.lower() in p.lower():
+            idx = p.lower().find(sep.lower())
+            p = p[:idx].strip()
+            break
+    m = re.search(r"(quartier\s+(?:\S+\s+){0,2}\S+)", p, re.I)
+    if m:
+        return m.group(1).strip()
+    if len(p) <= 55:
+        return p
+    chunk = p.split(",")[0].strip()
+    return chunk if len(chunk) <= 55 else chunk[:52].rsplit(" ", 1)[0] + "…"
+
+
+def _parse_lieu_contact(lieu: str, ville: str, titre_disp: str) -> tuple[str, list[str]]:
+    if not lieu:
+        return "", []
+    l = lieu.strip()
+    ville_pat = re.escape(ville)
+    titre_pat = re.escape(titre_disp)
+    times = _extract_times_from_text(l)
+    place = l
+    for pat in (ville_pat, titre_pat, r"Thi[eè]s", r"Thies"):
+        place = re.sub(rf"^{pat}\s+", "", place, flags=re.I)
+    place = re.sub(r"^\d{1,2}h\d{0,2}\s+", "", place, flags=re.I)
+    place = re.sub(r"^\d{1,2}\s*h\s+", "", place, flags=re.I)
+    place = re.sub(r"\s+à\s+\d{1,2}h\d{0,2}\s*$", "", place, flags=re.I)
+    return _shorten_city_place(place), times
+
+
+def _format_departs_simple(times: list[str], horaires_blob: str = "") -> str:
+    if horaires_blob:
+        m = re.search(r"(\d{1,2})h\s*à\s*(\d{1,2})h", horaires_blob, re.I)
+        if m:
+            return f"{m.group(1)}h à {m.group(2)}h"
+    hours: list[str] = []
+    seen: set[int] = set()
+    for t in times:
+        m = re.match(r"(\d{1,2})h", (t or "").strip(), re.I)
+        if not m:
+            continue
+        h = int(m.group(1))
+        if h in seen:
+            continue
+        seen.add(h)
+        hours.append(f"{h}h")
+    hours.sort(key=lambda x: int(re.match(r"(\d+)", x).group(1)))
+    if not hours:
+        return ""
+    if len(hours) == 1:
+        return hours[0]
+    if len(hours) == 2:
+        return f"{hours[0]} et à {hours[1]}"
+    return ", ".join(hours[:-1]) + f" et à {hours[-1]}"
+
+
+def _format_jours_phrase(jours: list[str]) -> str:
+    if not jours:
+        return ""
+    if len(jours) >= 2 and all(
+        re.search(r"lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche", j, re.I)
+        for j in jours
+    ):
+        a = re.sub(r"\s*,\s*", ", ", jours[0].strip())
+        b = re.sub(r"\s*,\s*", ", ", jours[1].strip())
+        jl = f"{a.lower()}, ou {b.lower()}"
+        return jl if jl.startswith("le ") else jl
+
+    text = " ".join(j.strip() for j in jours if j and j.strip())
+    if re.search(r"\d+h", text, re.I) and re.search(r"tous les jours", text, re.I):
+        m = re.search(r"(tous les jours(?:\s+sauf\s+[^,]+)?)", text, re.I)
+        text = m.group(1).strip() if m else "tous les jours"
+    text = re.sub(r"\s+,", ",", text)
+    text = re.sub(r",\s*,+", ",", text)
+    if text.lower().startswith("tous"):
+        text = text[0].lower() + text[1:]
+    elif re.match(r"^(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)", text, re.I):
+        text = "le " + text[0].lower() + text[1:]
+    text = re.sub(
+        r"\bsauf\s+([A-Za-zÀ-ÿ\-]+)",
+        lambda m: f"sauf le {m.group(1).lower()}",
+        text,
+        flags=re.I,
+    )
+    return text.strip()
+
+
+def _dakar_depart_label(place: str) -> str:
+    p = re.sub(r"^terminus\s+", "", (place or "").strip(), flags=re.I)
+    if re.search(r"libert", p, re.I):
+        return f"du terminus {p} à Dakar"
+    if re.search(r"gare de colobane", p, re.I):
+        return "de la gare de Colobane à Dakar"
+    if re.search(r"grand yoff|hlm", p, re.I):
+        return "du HLM Grand Yoff à Dakar"
+    if re.search(r"terminus", place or "", re.I):
+        return f"du {place.strip()} à Dakar"
+    return f"du {p} à Dakar" if p else "de Dakar"
+
+
+def _city_depart_label(place: str, titre_disp: str) -> str:
+    p = (place or "").strip()
+    if not p:
+        return f"de {titre_disp}"
+    return f"du {p} à {titre_disp}"
+
+
+def _extract_interurban_depart_info(
+    section: dict,
+    ville: str,
+    horaires: list[str],
+    depart: str,
+    arrivee: str,
+    contacts: list[dict],
+) -> tuple[str, str, list[str]]:
+    """Extrait lieux et horaires — formats structurés (Touba) et legacy (Kaolack…)."""
+    titre_disp = _city_display_name(ville)
+    dakar_place = ""
+    city_place = ""
+    times: list[str] = []
+    horaires_blob = " ".join(horaires or [])
+
+    # 1. Champ depart (source la plus fiable pour le terminus Dakar)
+    if depart:
+        dp, dt = _parse_legacy_depart_field(depart)
+        if dp:
+            dakar_place = dp
+        if dt:
+            times = dt
+
+    # 2. Horaires structurés « Départ Ville (lieu) : … »
+    depart_lines, _ = _split_horaires_raw(horaires)
+    for line in depart_lines:
+        parsed = _parse_depart_horaire_line(line)
+        if not parsed:
+            continue
+        place, tms = parsed
+        if re.search(r"\bdakar\b", place, re.I) and titre_disp.lower() not in place.lower():
+            if not dakar_place or dakar_place.lower() == "dakar":
+                raw = place.strip()
+                pm = re.match(r"^Dakar\s*\(([^)]+)\)$", raw, re.I)
+                dakar_place = _normalize_dakar_place(pm.group(1) if pm else raw) or raw
+            if tms:
+                times = tms
+        else:
+            pm = re.match(
+                rf"^(?:{re.escape(titre_disp)}|{re.escape(ville)})\s*\(([^)]+)\)$",
+                place.strip(),
+                re.I,
+            )
+            if pm or not re.search(r"\bdakar\b", place, re.I):
+                city_place = (
+                    pm.group(1).strip()
+                    if pm
+                    else _shorten_city_place(_normalize_dakar_place(place) if place.lower() == "dakar" else place)
+                )
+            if tms and not times:
+                times = tms
+
+    # 3. Horaires legacy (7h et 15h, Dakar 8h…) — sans lignes « arrivée estimée »
+    clean_blob = re.sub(r"arriv[eé]e\s+estim[^.]*", "", horaires_blob, flags=re.I)
+    if not times:
+        for line in horaires:
+            if re.match(r"^[Dd][ée]part\s+Dakar\s*:", line):
+                continue
+            if re.search(r"arriv[eé]e\s+estim", line, re.I):
+                continue
+            if line.strip().lower() in {ville.lower(), titre_disp.lower()}:
+                continue
+            tms = _extract_times_from_text(line)
+            if tms:
+                times = tms
+                break
+        if not times:
+            times = _extract_times_from_text(clean_blob)
+
+    # 4. Contact destination (filtré par ville pour Podor/Ndioum, Louga/Kébémer…)
+    ville_contacts = get_contact_for_ville(ville) or contacts
+    if ville_contacts and not city_place:
+        for c in ville_contacts:
+            lieu = (c.get("lieu") or "").strip()
+            if not lieu:
+                continue
+            cp, ct = _parse_lieu_contact(lieu, ville, titre_disp)
+            if cp:
+                city_place = cp
+                if ct and not times:
+                    times = ct
+                break
+
+    if arrivee and not city_place:
+        city_place = _shorten_city_place(arrivee.split(",")[0])
+
+    if not dakar_place or dakar_place.lower() == "dakar":
+        dakar_place = "Liberté 5"
+
+    # Fusionner heures de départ (sans reprendre les heures d'arrivée)
+    all_times: list[str] = list(times)
+    for src in (depart, clean_blob):
+        for t in _extract_times_from_text(src or ""):
+            if t not in all_times:
+                all_times.append(t)
+    times = all_times
+
+    return dakar_place, city_place, times
+
+
+def _format_city_bus_sentence(
+    section: dict,
+    ville: str,
+    jours: list[str],
+    horaires: list[str],
+    depart: str,
+    arrivee: str,
+    contacts: list[dict],
+    *,
+    include_duration: bool = True,
+) -> str:
+    titre_disp = _city_display_name(ville)
+    horaires_blob = " ".join(horaires or [])
+    dakar_place, city_place, times = _extract_interurban_depart_info(
+        section, ville, horaires, depart, arrivee, contacts
+    )
+    parts = [_dakar_depart_label(dakar_place)]
+    if city_place:
+        parts.append(_city_depart_label(city_place, titre_disp))
+    sentence = "Les bus partent " + " et ".join(parts)
+    jours_phrase = _format_jours_phrase(jours)
+    if jours_phrase:
+        sentence += f", {jours_phrase}"
+    departs = _format_departs_simple(times, horaires_blob)
+    if departs:
+        sentence += f", avec des départs à {departs}"
+    if include_duration:
+        meta = _city_route_meta(section, ville)
+        dur_txt = format_duration_prose(meta.get("durees") or {}, times)
+        if dur_txt:
+            sentence += f" — {dur_txt.rstrip('.')}"
+    return sentence + "."
+
+
+def _format_city_full_prose(
+    section: dict,
+    ville: str,
+    *,
+    prix_str: str,
+    jours: list[str],
+    horaires: list[str],
+    depart: str,
+    arrivee: str,
+    tels: list[str],
+    contacts: list[dict],
+) -> str:
+    """Voyage complet — réponse courte type agent Dem Dikk."""
+    titre_disp = _city_display_name(ville)
+    prix_disp = _format_prix_display(get_prix_for_ville(ville) or prix_str)
+
+    intro = f"Pour aller à {titre_disp}"
+    if prix_disp:
+        intro += f", le trajet coûte {prix_disp}"
+    intro += "."
+
+    bus_sentence = _format_city_bus_sentence(
+        section, ville, jours, horaires, depart, arrivee, contacts
+    )
+
+    ville_contacts = get_contact_for_ville(ville) or contacts
+    tels_local = [str(c.get("tel")).strip() for c in ville_contacts if c.get("tel")]
+
+    footer = _INTERURBAIN_RESERVATION_SHORT
+    if tels_local:
+        footer += f" Contact sur place : {tels_local[0]}."
+
+    chunks = [intro, bus_sentence, footer]
+    return " ".join(p.strip() for p in chunks if p.strip())
+
+
+def _format_city_clarify_prose(section: dict, ville: str) -> str:
+    """Ville seule — ton agent humain."""
+    titre_disp = _city_display_name(ville)
+    prix_disp = _format_prix_display(get_prix_for_ville(ville) or section.get("prix"))
+    intro = f"Oui, nos bus Dakar Dem Dikk vont bien à {titre_disp} sur le réseau interurbain."
+    if prix_disp:
+        detail = f" Depuis Dakar, le trajet est à {prix_disp}."
+        follow = (
+            " Dites-moi si vous cherchez les horaires, comment réserver "
+            "ou une autre info."
+        )
+    else:
+        detail = ""
+        follow = (
+            " Dites-moi si vous cherchez les horaires, le tarif, "
+            "comment réserver ou autre chose."
+        )
+    return intro + detail + follow
+
+
+def _section_contacts_for_ville(section: dict, ville: str) -> list[dict]:
+    return get_contact_for_ville(ville) or section.get("lieux_contact") or []
+
+
+def _format_city_response_prose(section: dict, ville: str, aspect: str = "full") -> str:
+    """
+    Réponse interurbaine concise : uniquement l'aspect demandé, sans redondance.
+    Données interurbain_data / site — pas de reformulation LLM.
+    """
+    titre_disp = _city_display_name(ville)
+    prix_disp = _format_prix_display(get_prix_for_ville(ville) or section.get("prix"))
+    if isinstance(section.get("prix"), dict) and not get_prix_for_ville(ville):
+        prix_disp = _format_prix_display(
+            " / ".join(f"{k} : {v}" for k, v in section["prix"].items())
+        )
+    jours = [str(j).strip() for j in (section.get("jours") or []) if str(j).strip()]
+    horaires_raw = [str(h).strip() for h in (section.get("horaires") or []) if str(h).strip()]
+    horaires = horaires_raw if horaires_raw else []
+    contacts = _section_contacts_for_ville(section, ville)
+    itineraire = (section.get("itineraire") or "").strip()
+    if not itineraire:
+        itineraire = _city_route_meta(section, ville).get("itineraire") or ""
+    depart = (section.get("depart") or "").strip()
+    arrivee = (section.get("arrivee") or "").strip()
+    tels = [str(c.get("tel")).strip() for c in contacts if c.get("tel")]
+    places_in_horaires = _horaires_detail_places(horaires_raw)
+
+    if aspect == "clarify":
+        return _format_city_clarify_prose(section, ville)
+
+    if aspect == "reservation":
+        return _INTERURBAIN_RESERVATION
+
+    if aspect == "prix":
+        if prix_disp:
+            return f"Le trajet vers {titre_disp} coûte {prix_disp}."
+        return (
+            "Tarif non disponible ici. Consultez demdikk.sn/reseau-interurbain/ "
+            "ou le service client au +221 33 824 10 10."
+        )
+
+    if aspect == "itineraire":
+        if itineraire:
+            return f"Itinéraire Dakar–{titre_disp} : {itineraire}."
+        return (
+            f"Itinéraire non disponible ici. Consultez demdikk.sn/reseau-interurbain/ "
+            f"ou appelez le +221 33 824 10 10."
+        )
+
+    if aspect == "contact":
+        parts: list[str] = []
+        if arrivee and not places_in_horaires:
+            parts.append(f"Arrivée à {titre_disp} : {arrivee}.")
+        elif contacts and not places_in_horaires:
+            lieu = (contacts[0].get("lieu") or "").strip()
+            if lieu:
+                parts.append(f"Point {titre_disp} : {lieu}.")
+        if tels:
+            parts.append(f"Contact : {tels[0]}.")
+        return " ".join(parts) if parts else _INTERURBAIN_RESERVATION
+
+    if aspect == "horaires":
+        return _format_city_bus_sentence(
+            section, ville, jours, horaires_raw, depart, arrivee, contacts
+        )
+
+    # aspect == "full" — voyage complet, réponse courte
+    return _format_city_full_prose(
+        section,
+        ville,
+        prix_str=prix_disp,
+        jours=jours,
+        horaires=horaires_raw,
+        depart=depart,
+        arrivee=arrivee,
+        tels=tels,
+        contacts=contacts,
+    )
+
+
+def _resolve_city_aspect(qn: str, question: str, section: dict) -> str:
+    if _is_city_only_query(qn, section):
+        return "clarify"
+    return _city_query_aspect(qn, question)
+
+
+def _json_interurban_city(
+    question: str, q_norm: str, city_hint: str = ""
+) -> dict | None:
+    """Payload JSON ville interurbaine — None si pas de ville ou requête ligne urbaine."""
+    city_section = (get_section_by_ville(city_hint) if city_hint else None) or _detect_city(q_norm)
+    if not city_section:
+        return None
+    qtype = detect_query_type(question)
+    if qtype in ("all_lines_summary", "line_X"):
+        return None
+    ville_key = city_hint or _ville_key_from_query(q_norm, city_section)
+    aspect = _resolve_city_aspect(q_norm, question, city_section)
+    answer = _format_city_response_prose(city_section, ville_key, aspect=aspect)
+    titre = _city_display_name(ville_key)
+    return {
+        "answer": answer,
+        "summary": f"Réseau interurbain : {titre}",
+        "sources": [
+            {
+                "title": "Réseau Interurbain DDD",
+                "url": "https://demdikk.sn/reseau-interurbain/",
+                "score": 1.0,
+            }
+        ],
+        "results": [{"content": answer, "target_city": titre}],
+        "query_type": "city_info",
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "needs_clarification": False,
+        "show_more_info": aspect != "clarify",
+    }
 
 
 # ── Détection ville ───────────────────────────────────────────────────────────
@@ -370,6 +1201,8 @@ def _stop_name_matches_query(sn: str, stop_n: str) -> bool:
 
 def find_lines_for_stop(stop_name: str) -> list:
     """Retourne les lignes dont un arrêt correspond à stop_name (mots entiers)."""
+    if not _stop_candidate_is_plausible(stop_name):
+        return []
     stop_n = _norm(stop_name)
     if len(stop_n) < 3:
         return []
@@ -428,8 +1261,50 @@ _BAD_STOP_EXTRACT = frozenset(
         "service", "client", "commercial", "facturation",
         "information", "informations", "accueil", "assistance",
         "aide", "contact", "réclamation", "reclamation", "urgence",
+        "de", "la", "le", "les", "du", "des", "au", "aux", "un", "une",
     )
 )
+
+_FRENCH_FUNCTION_WORDS = frozenset(
+    _norm(w) for w in (
+        "de", "la", "le", "les", "du", "des", "au", "aux", "un", "une", "en",
+        "a", "je", "tu", "veux", "faire", "fait", "pour", "par", "sur", "dans",
+        "et", "ou", "si", "que", "qui", "quoi", "pas", "ne", "ce", "se",
+    )
+)
+
+_BAD_STOP_PHRASES = frozenset(
+    _norm(p) for p in (
+        "de la", "de le", "de les", "du", "des", "au", "aux", "a la", "a le",
+        "en la", "en le", "pour la", "pour le", "faire de", "veux faire", "je veux",
+        "de la pub", "de la publicite", "la", "le", "les", "un", "une",
+    )
+)
+
+_SKIP_IMPLICIT_STOP_KEYWORDS = (
+    "publicite", "partenariat", "annonce", "publicitaire", "regie publicitaire",
+    "pub", "emploi", "recrutement", "candidature", "location", "reservation",
+    "abonnement", "messagerie", "colis",
+)
+
+
+def _stop_candidate_is_plausible(chunk: str) -> bool:
+    """Rejette « de la », mots-outils seuls, etc. — pas un nom d'arrêt."""
+    t = (chunk or "").strip()
+    if len(t) < 2:
+        return False
+    nw = _norm(t)
+    if len(nw) < 4 or nw in _BAD_STOP_PHRASES:
+        return False
+    toks = [x for x in nw.split() if x]
+    if not toks or all(x in _FRENCH_FUNCTION_WORDS for x in toks):
+        return False
+    return any(len(x) >= 4 and x not in _FRENCH_FUNCTION_WORDS for x in toks)
+
+
+def _should_skip_implicit_stop_inference(q_norm: str) -> bool:
+    """Pas d'inférence arrêt pour sujets service / commercial / RH."""
+    return any(k in q_norm for k in _SKIP_IMPLICIT_STOP_KEYWORDS)
 
 
 def _san_stop_tail(t: str) -> str | None:
@@ -439,6 +1314,8 @@ def _san_stop_tail(t: str) -> str | None:
         return None
     parts = t.split()
     if len(parts) == 1 and _norm(parts[0]) in _BAD_STOP_EXTRACT:
+        return None
+    if not _stop_candidate_is_plausible(t):
         return None
     return t[:200]
 
@@ -525,7 +1402,7 @@ def _infer_stop_name_implicit(question: str) -> str | None:
     candidates = []
     # Phrase entière : seulement si ce n'est pas un mot-ban (sinon « service » seul repassait ici).
     full_q = question.strip()
-    if _norm(full_q) not in _STOP_QUERY_STOPWORDS:
+    if _norm(full_q) not in _STOP_QUERY_STOPWORDS and _stop_candidate_is_plausible(full_q):
         candidates.append(full_q)
     # Phrases de 1 à 4 mots consécutifs
     for n in range(1, min(5, len(words) + 1)):
@@ -533,6 +1410,8 @@ def _infer_stop_name_implicit(question: str) -> str | None:
             chunk = ' '.join(words[i : i + n])
             nw = _norm(chunk)
             if len(nw) < 4 or nw in _STOP_QUERY_STOPWORDS:
+                continue
+            if not _stop_candidate_is_plausible(chunk):
                 continue
             candidates.append(chunk)
 
@@ -824,6 +1703,7 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
         r"|\bcombi[e\u00e8]n\s+de\s+temps\b"           # combien de temps
         r"|\bcombi[e\u00e8]n\s+(?:ca|\u00e7a)\s+co[u\u00fb]te?\b"  # combien ça coûte
         r"|\b[a\u00e0]\s+quelle\s+heure\b"             # à quelle heure
+        r"|\bheures?\b"                                 # heure / heures (suivi contexte ville)
         r"|\bcomment\s+(?:r[e\u00e9]server|partir|r[e\u00e9]server)\b",  # comment réserver
         re.IGNORECASE,
     )
@@ -875,7 +1755,7 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
         # DeepSeek indisponible → fallback sur les mots-clés
         priceish = any(w in qn for w in (
             "prix", "tarif", "cout", "fcfa", "coute", "combien", "cher", "paye",
-            "horaire", "depart", "billet", "ticket", "reservation",
+            "horaire", "heure", "heures", "depart", "billet", "ticket", "reservation",
         ))
         lineish = any(w in qn for w in (
             "ligne", "arret", "station", "terminus", "bus", "dessert", "desservent",
@@ -908,7 +1788,12 @@ def ask():
     else:
         history_raw = body.get('conversationHistory')
 
-    question_raw = (body.get('question') or body.get('q') or '').strip()
+    question_raw = (
+        getattr(g, "resolved_question", None)
+        or body.get("question")
+        or body.get("q")
+        or ""
+    ).strip()
     question_resolved = _enrich_short_question_from_history(question_raw, history_raw)
     question  = normalize_query_typos(question_resolved.strip())
     city_hint = (body.get('city') or '').strip()
@@ -945,6 +1830,56 @@ def ask():
                         "summary": pres.get("summary", "Présentation de Dakar Dem Dikk"),
                         "sources": pres.get("sources", []),
                         "results": pres.get("results", []),
+                        "query_type": "general",
+                        "has_structured_data": False,
+                        "is_city_query": False,
+                        "is_line_query": False,
+                        "needs_clarification": False,
+                        "show_more_info": True,
+                    })
+        except Exception:
+            pass
+
+    # Ville interurbaine — avant réservation / publicité générique (« comment réserver touba »)
+    _city_payload = _json_interurban_city(question, q_norm, city_hint)
+    if _city_payload:
+        return jsonify(_city_payload)
+
+    # Services DDD (publicité, partenariat…) — avant inférence arrêt / hors-sujet
+    if any(k in q_norm for k in _SKIP_IMPLICIT_STOP_KEYWORDS):
+        try:
+            import sys as _sys
+            _app_mod = _sys.modules.get("app")
+            _fb = getattr(_app_mod, "_fallback_publicite_partenariat", None) if _app_mod else None
+            if _fb and _app_mod and getattr(_app_mod, "_is_publicite_query", lambda q: False)(q_norm):
+                com = _fb(question)
+                if com and com.get("answer"):
+                    return jsonify({
+                        "answer": com["answer"],
+                        "summary": com.get("summary", "Partenariat et publicité DDD")[:200],
+                        "sources": com.get("sources", []),
+                        "results": com.get("results", []),
+                        "query_type": "general",
+                        "has_structured_data": False,
+                        "is_city_query": False,
+                        "is_line_query": False,
+                        "needs_clarification": False,
+                        "show_more_info": True,
+                    })
+            _fb = getattr(_app_mod, "_fallback_from_site", None) if _app_mod else None
+            if _fb:
+                com = _fb(question)
+                ans = (com.get("answer") or "").lower() if com else ""
+                junk = (
+                    "agent-ia", "guide complet des services",
+                    "je n'ai pas trouv",
+                )
+                if com and com.get("answer") and not any(j in ans for j in junk):
+                    return jsonify({
+                        "answer": com["answer"],
+                        "summary": com.get("summary", "Partenariat et publicité DDD")[:200],
+                        "sources": com.get("sources", []),
+                        "results": com.get("results", []),
                         "query_type": "general",
                         "has_structured_data": False,
                         "is_city_query": False,
@@ -1006,23 +1941,10 @@ def ask():
     qtype = detect_query_type(question)
     lines_stop_explicit = qtype == "lines_to_stop"
 
-    # ── 1. Ville interurbaine ─────────────────────────────────────────────────
-    city_section = (get_section_by_ville(city_hint) if city_hint else None) or _detect_city(q_norm)
-    if city_section and qtype not in ("all_lines_summary", "line_X"):
-        ville_key = city_hint or city_section["villes"][0]
-        answer    = _format_city_answer(city_section, ville_key)
-        titre     = city_section.get("titre", ville_key.upper())
-        return jsonify({
-            "answer":      answer,
-            "summary":     f"Réseau interurbain : {titre}",
-            "sources":     [{"title": "Réseau Interurbain DDD",
-                             "url": "https://demdikk.sn/reseau-interurbain/", "score": 1.0}],
-            "results":     [{"structured_data": city_section, "content": answer}],
-            "query_type":  "city_info",
-            "has_structured_data": True,
-            "is_city_query": True, "is_line_query": False,
-            "needs_clarification": False,
-        })
+    # ── 1. Ville interurbaine (secours si non traitée plus haut) ───────────────
+    _city_payload = _json_interurban_city(question, q_norm, city_hint)
+    if _city_payload:
+        return jsonify(_city_payload)
 
     # ── 2. Toutes les lignes ──────────────────────────────────────────────────
     if qtype == "all_lines_summary":
@@ -1062,10 +1984,12 @@ def ask():
         # ou sur l'AIBD/aéroport (navette, pas arrêt de bus urbain)
         _STOP_SKIP_RE = re.compile(
             r'\b(ticket|tarif|prix|combien|co[uû]te?|billet|payer?|fcfa|'
-            r'aibd|a[eé]roport|navette|blaise\s+diagne)\b',
+            r'aibd|a[eé]roport|navette|blaise\s+diagne|'
+            r'publicite|publicité|partenariat|annonce|publicitaire|regie|pub|'
+            r'emploi|recrutement|location|reservation|abonnement)\b',
             re.IGNORECASE,
         )
-        if not re.search(_STOP_SKIP_RE, question):
+        if not re.search(_STOP_SKIP_RE, question) and not _should_skip_implicit_stop_inference(q_norm):
             infer = _infer_stop_name_implicit(question)
             if infer:
                 ml = find_lines_for_stop(infer)

@@ -718,6 +718,19 @@ function looksLikeProseNotSectionTitle(line) {
   return false
 }
 
+/** Ajoute « … voir plus » à la fin du dernier bloc de texte (même ligne visuelle). */
+function appendInlineSeeMore(html, encodedDetails) {
+  const link =
+    `<span class="answer-ellipsis">…</span> <button type="button" class="see-more-link" data-action="show-full-content" data-full="${encodedDetails}">voir plus</button>`
+  if (/<\/p>\s*$/i.test(html)) {
+    return html.replace(/<\/p>\s*$/i, `${link}</p>`)
+  }
+  if (/<\/div>\s*$/i.test(html)) {
+    return html.replace(/<\/div>\s*$/i, `${link}</div>`)
+  }
+  return `${html}${link}`
+}
+
 function formatResponseText(text) {
   if (!text || !text.trim()) return ''
 
@@ -1436,8 +1449,9 @@ form.addEventListener('submit', async (e)=>{
       const hasIndexedSnippet = json.results && json.results.length > 0
       const structuredInAnswer =
         answerHasStructuredBlockMarkers(cleanAnswer)
-      const usePlainAnswer =
-        !isCityQuery && !isLineQuery && !hasIndexedSnippet && !structuredInAnswer
+      const useProseAnswer =
+        json.query_type === 'city_info' ||
+        (!isCityQuery && !isLineQuery && !hasIndexedSnippet && !structuredInAnswer)
 
       // Formater la réponse
       let responseHtml = ''
@@ -1445,46 +1459,46 @@ form.addEventListener('submit', async (e)=>{
       if (isLineQuery) {
         responseHtml = formatBusLines(cleanAnswer, targetCity)
       } else if (isCityQuery) {
-        if (result.structured_data && Object.keys(result.structured_data).length > 0) {
-          responseHtml += formatStructuredData(result.structured_data, targetCity)
+        const sd = result.structured_data || json.structured_data || {}
+        const cityLabel = targetCity || sd.titre || (sd.villes && sd.villes[0]) || ''
+        if (sd && Object.keys(sd).length > 0) {
+          responseHtml += formatStructuredData(sd, cityLabel)
         } else {
-          responseHtml += formatResponseText(cleanAnswer)
+          responseHtml += `<div class="answer-content answer-plain">${formatResponseText(cleanAnswer)}</div>`
         }
-      } else if (usePlainAnswer) {
-        responseHtml += formatPlainAnswerHtml(cleanAnswer)
+      } else if (useProseAnswer) {
+        responseHtml += `<div class="answer-content answer-plain">${formatResponseText(cleanAnswer)}</div>`
       } else {
         // Afficher un extrait si la réponse est longue
-        const previewText = cleanAnswer.length > PREVIEW_MAX
-          ? cleanAnswer.substring(0, PREVIEW_MAX).trimEnd() + '…'
+        const isTruncated = cleanAnswer.length > PREVIEW_MAX
+        const previewText = isTruncated
+          ? cleanAnswer.substring(0, PREVIEW_MAX).trimEnd()
           : cleanAnswer
-        responseHtml += `<div class="answer-content">${formatResponseText(previewText)}</div>`
+        const showExpand = !useProseAnswer && !isLineQuery && !isCityQuery && isTruncated
+        const encodedDetails = encodeURIComponent(detailsContent)
+        let previewHtml = formatResponseText(previewText)
+        if (showExpand) {
+          previewHtml = appendInlineSeeMore(previewHtml, encodedDetails)
+        }
+        responseHtml += `<div class="answer-content">${previewHtml}</div>`
       }
       
       if (shouldShowMoreInfoLink(json)) {
         responseHtml += formatMoreInfoMeta(json)
       }
       
-      // "Plus de détails" : pas pour le texte simple ni ligne/ville ; seulement si contenu indexé tronqué
-      const showDetails = !usePlainAnswer && !isLineQuery && !isCityQuery
-        && (cleanAnswer.length > PREVIEW_MAX || detailsContent !== cleanAnswer)
       const encodedFull = encodeURIComponent(cleanAnswer)
-      const encodedDetails = encodeURIComponent(detailsContent)
       const copyFabBtn =
         `<div class="copy-fab-row"><button type="button" class="copy-fab" data-action="copy" data-copy="${encodedFull}" title="Copier" aria-label="Copier">${COPY_FAB_SVG}</button></div>`
       responseHtml =
         '<div class="bot-reply-block">' +
         responseHtml +
         copyFabBtn +
-        '</div>' +
-        (showDetails
-          ? '<div class="controls">' +
-            `<button class="small-btn" data-action="show-full-content" data-full="${encodedDetails}"><span>📖</span> Plus de détails</button>` +
-            '</div>'
-          : '')
+        '</div>'
       
       placeholder.querySelector('.bubble').innerHTML = responseHtml
 
-      // Gestionnaire pour "Plus de détails"
+      // « voir plus » : développer la réponse dans la bulle
       const expandBtn = placeholder.querySelector('button[data-action="show-full-content"]')
       if (expandBtn) {
         expandBtn.addEventListener('click', function() {
@@ -1494,9 +1508,6 @@ form.addEventListener('submit', async (e)=>{
           if (contentDiv && fullContent) {
             contentDiv.innerHTML = formatResponseText(fullContent)
           }
-          this.disabled = true
-          this.classList.add('small-btn--state-done')
-          this.textContent = '✓ Affiché'
           chat.scrollTop = chat.scrollHeight
         })
       }

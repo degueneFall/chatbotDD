@@ -270,6 +270,34 @@ body::before {
   color: #0d9488;
 }
 
+/* « voir plus » inline après troncature (… voir plus) */
+.answer-ellipsis {
+  letter-spacing: 0.02em;
+}
+.see-more-link {
+  display: inline;
+  margin: 0 0 0 0.15em;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ddd-primary);
+  font-weight: 600;
+  font-size: inherit;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  vertical-align: baseline;
+}
+.see-more-link:hover {
+  text-decoration: underline;
+  color: #12a088;
+}
+.see-more-link:focus-visible {
+  outline: 2px solid var(--ddd-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 .preview{ 
   margin-top:12px; 
   color:inherit; 

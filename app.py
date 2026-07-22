@@ -99,20 +99,187 @@ _ADDRESS_BLOCK = (
 )
 
 # Mots-clés indiquant une question hors du périmètre DDD
-_OFF_TOPIC_WORDS = frozenset([
-    "meteo", "weather", "temperature", "pluie", "soleil",
+# SOFT : hors-sujet seulement s'il n'y a aucun contexte transport DDD
+_OFF_TOPIC_SOFT = frozenset([
+    "meteo", "weather", "temperature", "pluie", "soleil", "intemperie",
     "politique", "president", "gouvernement", "election",
-    "macky", "sall", "sonko", "wade",
     "football", "sport", "match",
     "can", "caf", "copa", "mondial", "champions", "ligue", "nba", "rugby", "tennis",
-    "barca", "barcelona", "barcelone",
-    "messi", "ronaldo", "psg", "om", "ol", "liverpool", "chelsea", "arsenal",
     "cinema", "film", "serie", "musique",
     "restaurant", "hotel", "tourisme",
     "sante", "medecin", "hopital", "pharmacie",
-    "bitcoin", "crypto", "bourse", "finance",
     "recette", "cuisine",
 ])
+# HARD : hors-sujet même avec un mot transport faible (noms propres, crypto…)
+_OFF_TOPIC_HARD = frozenset([
+    "macky", "sall", "sonko", "wade",
+    "barca", "barcelona", "barcelone",
+    "messi", "ronaldo", "psg", "om", "ol", "liverpool", "chelsea", "arsenal",
+    "bitcoin", "crypto", "bourse", "finance",
+])
+# Compat : union pour les grep / usages legacy
+_OFF_TOPIC_WORDS = _OFF_TOPIC_SOFT | _OFF_TOPIC_HARD
+
+_TRANSPORT_CONTEXT_MARKERS = (
+    "bus", "ligne", "lignes", "arret", "arrets", "transport", "voyage",
+    "dem dikk", "demdikk", "ddd", "dakar dem dikk",
+    "reservation", "reserver", "billet", "ticket", "abonnement", "tek dem", "tekdem",
+    "carte", "colis", "horaire", "horaires", "tarif", "tarifs", "prix",
+    "contact", "agence", "agences", "assistance",
+    "interurbain", "touba", "thies", "thiès", "saint-louis", "fatick", "kaolack",
+    "bagage", "bagages", "remboursement", "annulation", "report",
+    "gare", "terminus", "destination", "navette", "aibd", "aeroport",
+    "depart", "departs", "trajet", "itineraire", "horaire",
+    "publicite", "partenariat", "messagerie", "location", "dem dikk",
+    "parcelles", "petersen", "ouakam", "colobane", "liberte", "ddd",
+    "valideur", "conducteur", "receveur", "passager", "voyageur",
+    "perturbation", "retard", "greve", "incident",
+)
+
+
+def _has_transport_context(qn: str) -> bool:
+    """True si la question évoque clairement DDD / transport (évite faux hors-sujet)."""
+    if not qn:
+        return False
+    if any(k in qn for k in _TRANSPORT_CONTEXT_MARKERS):
+        return True
+    # « arrêt X », « ligne 10 », « bus 12 »
+    if re.search(r"\b(ligne|bus|arret|arrets|gare|terminus)\s+\w", qn):
+        return True
+    if re.search(r"\b(ligne|bus)\s*\d", qn):
+        return True
+    return False
+
+
+def _is_strict_off_topic(question: str, qn: str | None = None) -> bool:
+    """
+    Hors-sujet métier (sport pur, crypto…) — pas les salutations (gérées avant).
+    Les mots ambigus (restaurant, match, météo…) ne bloquent que sans contexte transport.
+    """
+    qn = qn if qn is not None else _norm(question)
+    if not qn:
+        return False
+    if _conversational_kind(question, qn):
+        return False
+    if _question_looks_gibberish_normed(qn):
+        return True
+    words = set(qn.split())
+    if words & _OFF_TOPIC_HARD:
+        return True
+    if (words & _OFF_TOPIC_SOFT) and not _has_transport_context(qn):
+        return True
+    return False
+
+
+def _typo_vocab() -> tuple[str, ...]:
+    """Mots fréquents DDD pour détecter les fautes de frappe (cache module)."""
+    words: set[str] = set()
+    for marker in _TRANSPORT_CONTEXT_MARKERS:
+        words.update(w for w in marker.split() if len(w) >= 3)
+    words.update({
+        "bonjour", "bonsoir", "salut", "coucou", "hello", "merci", "comment",
+        "vas", "bien", "allez", "vous", "ca", "revoir", "bientot", "genial", "aller",
+        "remboursement", "annulation", "abonnement", "bagage", "bagages", "colis",
+        "messagerie", "publicite", "partenariat", "recrutement", "horaire", "horaires",
+        "tarif", "tarifs", "billet", "billets", "reservation", "rechargement", "carte",
+        "tek", "dem", "dikk", "touba", "thies", "saint", "louis", "fatick", "kaolack",
+        "petersen", "colobane", "ouakam", "liberte", "parcelles", "aibd", "aeroport",
+        "enfant", "location", "perturbation", "greve", "retard", "objet", "perdu",
+        "application", "appli", "navette", "gare", "terminus", "arret", "arrets",
+        "ligne", "lignes", "bus", "interurbain", "contact", "assistance", "prix",
+        "modifier", "report", "annuler", "annule", "tekdem", "demdikk", "presenter",
+        "identite", "qui", "es", "tu", "peux", "faire", "aider", "comment",
+    })
+    return tuple(sorted(words))
+
+
+def _find_typo_corrections(qn: str) -> list[tuple[str, str]]:
+    """Retourne [(mot_fautif, mot_corrigé), …] via proximité orthographique."""
+    import difflib
+
+    vocab = _typo_vocab()
+    vocab_set = set(vocab)
+    corrections: list[tuple[str, str]] = []
+    for w in (qn or "").split():
+        if len(w) < 4 or w in vocab_set:
+            continue
+        cutoff = 0.80 if len(w) <= 5 else 0.86
+        matches = difflib.get_close_matches(w, vocab, n=1, cutoff=cutoff)
+        if matches and matches[0] != w:
+            corrections.append((w, matches[0]))
+    return corrections
+
+
+def _apply_typo_corrections_qn(qn: str, corrections: list[tuple[str, str]]) -> str:
+    out = qn
+    for wrong, right in corrections:
+        out = re.sub(r"\b" + re.escape(wrong) + r"\b", right, out)
+    return out
+
+
+def _rebuild_question_with_corrections(question: str, corrections: list[tuple[str, str]]) -> str:
+    out = question or ""
+    for wrong, right in corrections:
+        out = re.sub(r"\b" + re.escape(wrong) + r"\b", right, out, flags=re.IGNORECASE)
+    return out.strip()
+
+
+def _format_typo_notice(corrections: list[tuple[str, str]]) -> str:
+    if not corrections:
+        return ""
+    if len(corrections) == 1:
+        wrong, right = corrections[0]
+        return f"Je pense que vous vouliez écrire « {right} » plutôt que « {wrong} ». "
+    parts = ", ".join(f"« {r} »" for _, r in corrections)
+    return f"Je corrige une petite faute de frappe ({parts}). "
+
+
+def _should_apply_typo_fix(
+    question: str,
+    qn: str,
+    fixed_q: str,
+    fixed_qn: str,
+    corrections: list[tuple[str, str]],
+) -> bool:
+    if not corrections or fixed_qn == qn:
+        return False
+    vocab_set = set(_typo_vocab())
+    if all(right in vocab_set for _, right in corrections):
+        return True
+    if _conversational_kind(fixed_q, fixed_qn) and not _conversational_kind(question, qn):
+        return True
+    if _is_strict_off_topic(question, qn) and not _is_strict_off_topic(fixed_q, fixed_qn):
+        return True
+    service_words = {
+        "remboursement", "annulation", "abonnement", "bagage", "horaire", "horaires", "tarif",
+        "billet", "reservation", "rechargement", "colis", "messagerie", "publicite",
+        "recrutement", "location", "contact", "tekdem", "interurbain", "navette",
+    }
+    if (set(fixed_qn.split()) & service_words) and not (set(qn.split()) & service_words):
+        return True
+    return False
+
+
+def _try_typo_recovery(question: str, qn: str | None = None) -> tuple[str, str, list[tuple[str, str]]] | None:
+    qn = qn if qn is not None else _norm(question)
+    corrections = _find_typo_corrections(qn)
+    if not corrections:
+        return None
+    fixed_qn = _apply_typo_corrections_qn(qn, corrections)
+    if fixed_qn == qn:
+        return None
+    fixed_q = _rebuild_question_with_corrections(question, corrections)
+    return fixed_q, fixed_qn, corrections
+
+
+def _with_typo_notice(data: dict, notice: str) -> dict:
+    if not notice or not data.get("answer"):
+        return data
+    out = dict(data)
+    if not (out["answer"] or "").startswith(notice.strip()[:20]):
+        out["answer"] = notice + out["answer"]
+    return out
+
 
 _VOWEL_IN_TOKEN_RE = re.compile(r"[aeiouyàâäéèêëïîôùûüÿœæ]")
 
@@ -413,6 +580,13 @@ _LLM_SYSTEM = (
     "– Ne termine JAMAIS par « N'hésitez pas à me demander », « Je reste à votre disposition » "
     "ou toute formule de politesse de clôture du même type.\n\n"
 
+    "REFORMULATION (rôle principal)\n"
+    "– On te fournit un extrait officiel du site Dakar Dem Dikk. Reformule-le en français clair "
+    "et naturel, comme le dirait Maï au téléphone.\n"
+    "– Intègre les titres de section dans des phrases complètes ; ne renvoie jamais un titre seul.\n"
+    "– Garde TOUS les faits du contexte : chiffres, délais, adresses e-mail, numéros, conditions.\n"
+    "– Tu peux simplifier la forme, pas le fond : même sens, mêmes données, zéro ajout.\n\n"
+
     "PRÉCISION ET CLARIFICATION\n"
     "– Si la question est ambiguë ou manque d'un détail essentiel (ex : destination, ligne), "
     "pose UNE SEULE question de précision, courte et naturelle. Exemples :\n"
@@ -447,9 +621,14 @@ _LLM_SYSTEM = (
     "  ✗ « Le ticket est à 350 FCFA »  →  ✓ « Le ticket est entre 150 et 350 FCFA selon le trajet. »\n"
     "  ✗ « Le ticket coûte 150 FCFA »  →  ✓ « Le ticket varie entre 150 et 350 FCFA selon le trajet. »\n"
     "– Si la question concerne DDD mais que l'information n'est PAS dans le contexte, "
-    "réponds EXACTEMENT cette phrase (sans rien ajouter, sans modifier) :\n"
-    "  « Je n'ai pas cette information pour le moment, je vous invite à contacter "
-    "notre service client au +221 33 824 10 10. »\n\n"
+    "ne dis JAMAIS que tu n'as pas le détail, que tes informations sont incomplètes, "
+    "ou que tu ne disposes pas de l'info (« je n'ai pas le détail… », « dans mes informations… », etc.). "
+    "Redirige directement vers le service client, par exemple :\n"
+    "  « Pour [reformuler brièvement la demande], je vous invite à contacter "
+    "notre service client au +221 33 824 10 10. »\n"
+    "– Si tu as déjà donné des informations utiles (tarifs, conditions, contacts), "
+    "ne termine JAMAIS par une phrase du type « car je n'ai pas le détail des démarches », "
+    "« je n'ai pas les démarches à suivre » ou toute variante de ce genre.\n\n"
 
     "TOUJOURS DES PHRASES COMPLÈTES\n"
     "– Ne réponds JAMAIS avec un mot seul, un chiffre seul, une liste sèche ou un fragment.\n"
@@ -584,6 +763,8 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
             "reservation", "reserver", "reservez",
             "directeur", "presentation", "historique", "assane", "thierno",
             "emploi", "recrutement", "candidature",
+            "publicite", "partenariat", "annonce", "publicitaire",
+            "remboursement", "annulation", "report", "bagage", "bagages",
         )):
             fb = _fallback_from_site(question)
             if fb and fb.get("answer"):
@@ -645,13 +826,17 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
     if history_block:
         user_prompt = (
             f"{history_block}\n\n"
-            f"Contexte :\n---\n{context}\n---\n\n"
-            f"Question : {question}"
+            f"Contexte (site officiel DDD — ne rien inventer en dehors de ce texte) :\n---\n{context}\n---\n\n"
+            f"Question : {question}\n\n"
+            f"Reformule le contexte en une réponse claire et naturelle à la question. "
+            f"Conserve tous les faits (chiffres, délais, contacts). N'ajoute aucune information absente du contexte."
         )
     else:
         user_prompt = (
-            f"Contexte :\n---\n{context}\n---\n\n"
-            f"Question : {question}"
+            f"Contexte (site officiel DDD — ne rien inventer en dehors de ce texte) :\n---\n{context}\n---\n\n"
+            f"Question : {question}\n\n"
+            f"Reformule le contexte en une réponse claire et naturelle à la question. "
+            f"Conserve tous les faits (chiffres, délais, contacts). N'ajoute aucune information absente du contexte."
         )
 
     try:
@@ -692,6 +877,8 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
                 # Sinon on ajoute un point pour éviter un fragment affiché
                 text = text.rstrip() + "."
 
+            text = _strip_llm_hedging(text)
+
             enhanced = dict(original_data)
             enhanced["answer"] = text
             enhanced["llm_provider"] = "deepseek"
@@ -703,6 +890,29 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
                 enhanced["has_structured_data"] = False
                 enhanced["is_city_query"] = False
                 enhanced["query_type"] = "general"
+            # DeepSeek dit « contactez le service client » alors que le contexte contient la réponse
+            if _deepseek_missing_info(text):
+                fb = _search_chatbot_page_blocks(question)
+                if fb and fb.get("answer") and not _answer_looks_like_junk(fb["answer"]):
+                    out = dict(original_data)
+                    out["answer"] = _clean_raw_answer(fb["answer"])
+                    out["sources"] = fb.get("sources", out.get("sources", []))
+                    out["results"] = fb.get("results", out.get("results", []))
+                    out["llm_enhanced"] = False
+                    out["gemini_enhanced"] = False
+                    return out
+                orig_clean = _clean_raw_answer(original_data.get("answer") or "")
+                if (
+                    orig_clean
+                    and len(orig_clean) >= 40
+                    and not _answer_looks_like_junk(orig_clean)
+                    and _answer_relevant_to_question(question, orig_clean)
+                ):
+                    out = dict(original_data)
+                    out["answer"] = orig_clean
+                    out["llm_enhanced"] = False
+                    out["gemini_enhanced"] = False
+                    return out
             return enhanced
     except Exception as e:
         err_str = str(e)
@@ -937,16 +1147,73 @@ def _norm(s: str) -> str:
         "presentations": "presentation",
         "histoire": "historique",
         "historique": "historique",
+        "greve": "perturbation",
+        "greves": "perturbation",
+        "retard": "perturbation",
+        "retards": "perturbation",
+        "intemperie": "perturbation",
+        "intemperies": "perturbation",
+        "enfants": "enfant",
     }
     for variant, canonical in _variants.items():
         s = re.sub(r"\b" + re.escape(variant) + r"\b", canonical, s)
     return s
 
 
+def _extract_section_for_marker(text: str, marker: str, max_chars: int = 1400) -> str:
+    """Extrait une section à partir d'un seul marqueur (titre de rubrique en début de ligne)."""
+    if not text or not marker:
+        return ""
+    t = text.replace("\r\n", "\n")
+    ml = marker.lower()
+    pos = 0
+    while True:
+        i = t.lower().find(ml, pos)
+        if i < 0:
+            break
+        line_start = t.rfind("\n", 0, i) + 1
+        line_end = t.find("\n", i)
+        line = t[line_start: line_end if line_end >= 0 else len(t)].strip()
+        if line.lower().startswith(ml[: min(len(ml), len(line))]) and len(line) <= len(marker) + 20:
+            return t[line_start: line_start + max_chars].strip()
+        pos = i + 1
+    i = t.lower().find(ml)
+    if i >= 0:
+        return t[i: i + max_chars].strip()
+    return ""
+
+
+def _extract_section_priority(text: str, start_markers: tuple[str, ...], max_chars: int = 1400) -> str:
+    """Essaie les marqueurs dans l'ordre (rubrique la plus précise en premier)."""
+    for m in start_markers:
+        section = _extract_section_for_marker(text, m, max_chars)
+        if section and len(section.strip()) >= 20:
+            return section
+    return ""
+
+
 def _extract_section(text: str, start_markers: tuple[str, ...], max_chars: int = 1400) -> str:
     if not text:
         return ""
     t = text.replace("\r\n", "\n")
+    # Préférer un marqueur en début de ligne (titre / FAQ), pas une occurrence au milieu d'une phrase
+    best_idx = -1
+    for m in start_markers:
+        pos = 0
+        ml = m.lower()
+        while True:
+            i = t.lower().find(ml, pos)
+            if i < 0:
+                break
+            line_start = t.rfind("\n", 0, i) + 1
+            line_end = t.find("\n", i)
+            line = t[line_start: line_end if line_end >= 0 else len(t)].strip()
+            if line.lower().startswith(ml[: min(len(ml), len(line))]) and len(line) <= len(m) + 20:
+                if best_idx < 0 or i < best_idx:
+                    best_idx = line_start
+            pos = i + 1
+    if best_idx >= 0:
+        return t[best_idx: best_idx + max_chars].strip()
     idx = -1
     for m in start_markers:
         i = t.lower().find(m.lower())
@@ -955,53 +1222,7 @@ def _extract_section(text: str, start_markers: tuple[str, ...], max_chars: int =
     if idx < 0:
         return ""
     snippet = t[idx: idx + max_chars]
-    # Ne pas couper immédiatement au prochain "###" :
-    # sur la page DDD, les sous-sections utiles (ex: dépôt/réception/suivi) sont aussi en "###".
     return snippet.strip()
-
-
-def _clip_at_next_top_heading(text: str) -> str:
-    """
-    Coupe une section au prochain titre de niveau "##" ou au séparateur "—"
-    (tiret long) qui marque la fin d'une section sur la page chatbot-2303.
-    """
-    if not text:
-        return ""
-    t = text.replace("\r\n", "\n")
-    # Couper au prochain titre ## (nouvelle section de haut niveau)
-    j = t.find("\n## ", 4)
-    # Couper aussi au séparateur "—" suivi d'une ligne vide (fin de section)
-    # On cherche "\n—\n" ou "\n—\n\n" ou "\n\n—\n"
-    for sep in ("\n—\n", "\n\n—\n", "\n— \n"):
-        k = t.find(sep, 60)  # ignorer les 60 premiers chars pour ne pas couper trop tôt
-        if k >= 0 and (j < 0 or k < j):
-            j = k
-    if j >= 0:
-        t = t[:j]
-    return t.strip()
-
-
-def _clip_at_next_subheading(text: str) -> str:
-    """
-    Coupe le texte au prochain sous-titre de niveau "###" (sous-section).
-    Utilisé pour isoler une seule sous-section (ex: Remboursement, Annulation).
-    """
-    if not text:
-        return ""
-    t = text.replace("\r\n", "\n")
-    # Sauter le titre de départ (première occurrence de ###) — chercher le suivant
-    first = t.find("###")
-    if first >= 0:
-        j = t.find("###", first + 3)
-    else:
-        j = t.find("###", 4)
-    if j >= 0:
-        t = t[:j]
-    # Aussi couper au prochain titre ##
-    k = t.find("\n## ", 4)
-    if k >= 0:
-        t = t[:k]
-    return t.strip()
 
 
 _page_cache: dict[str, tuple[float, str]] = {}
@@ -1131,6 +1352,58 @@ def _fallback_interurban(question: str) -> dict | None:
     }
 
 
+def _is_publicite_query(qn: str) -> bool:
+    """Question sur publicité / partenariat commercial (pas « république »)."""
+    if not qn or "republique" in qn:
+        return False
+    if any(k in qn for k in (
+        "publicite", "partenariat", "annonce", "publicitaire", "regie publicitaire",
+    )):
+        return True
+    return bool(re.search(r"\bpub\b", qn))
+
+
+def _fallback_publicite_partenariat(question: str) -> dict | None:
+    """Extrait la section Publicité et partenariats depuis chatbot-2303."""
+    qn = _norm(question)
+    if not _is_publicite_query(qn):
+        return None
+
+    url = "https://demdikk.sn/chatbot-2303/"
+    page_text = _fetch_page_text(url)
+    if not page_text:
+        return None
+
+    section = _extract_section(
+        page_text,
+        (
+            "Publicité et partenariats",
+            "Publicite et partenariats",
+            "Espaces publicitaires disponibles",
+            "Devenez partenaire",
+        ),
+        max_chars=1800,
+    )
+    if not section or len(section) < 40:
+        return None
+
+    for stop in ("\nContact et assistance", "\nProgramme de fid"):
+        i = section.find(stop)
+        if i > 80:
+            section = section[:i].rstrip()
+
+    result = _make_chatbot_result(section)
+    result["sources"] = [{
+        "title": "Publicité et partenariats – Dakar Dem Dikk",
+        "url": url,
+        "score": 0.95,
+    }]
+    if result.get("results"):
+        result["results"][0]["url"] = url
+        result["results"][0]["title"] = "Publicité et partenariats – DDD"
+    return result
+
+
 def _fallback_afrique_dem_dikk(question: str) -> dict | None:
     """Extrait du contenu utile sur 'Afrique Dem Dikk' depuis la page officielle chatbot."""
     qn = _norm(question)
@@ -1206,27 +1479,273 @@ def _lemmatize(text: str) -> str:
     return " ".join(_LEMMES.get(w, w) for w in words)
 
 
-def _smart_search_chatbot_page(question: str) -> dict | None:
-    """
-    Fallback générique à deux niveaux :
-      1) Chercher la sous-section ### la plus ciblée (si le titre matche)
-      2) Si aucune ne matche, chercher la section ## la plus pertinente
-    Élimine le besoin de fallback manuel pour chaque nouveau sujet.
-    """
+_LLM_MISSING_INFO_RE = re.compile(
+    r"je n['\u2019]ai pas (?:cette )?information(?: pour le moment)?|"
+    r"je n['\u2019]ai pas (?:le|les) d[ée]tail|"
+    r"dans mes informations(?: pour le moment)?|"
+    r"je n['\u2019]e dispose pas de (?:la|le|les|l['\u2019])?(?:liste|d[ée]tail)",
+    re.IGNORECASE,
+)
+
+_LLM_HEDGING_PHRASE_RES = (
+    re.compile(
+        r"(?:,\s*)?(?:car\s+)?\.?\s*je n['\u2019]ai pas (?:le|les) d[ée]tail(?:s)?(?: complet(?:s)?)?"
+        r"(?: (?:de|des|du|d['\u2019]) [^.!?]{3,120})?(?: dans mes informations)?(?: pour le moment)?\.?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\.?\s*je n['\u2019]ai pas (?:cette )?information(?: complète)?(?: pour le moment)?"
+        r"(?:,?)?(?: dans mes informations)?\.?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\.?\s*je n['\u2019]e dispose pas de (?:la|le|les|l['\u2019])?(?:liste exacte|d[ée]tail(?:s)? complet(?:s)?)"
+        r"(?: de [^.!?]{3,120})?(?: pour le moment)?\.?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\.?\s*mes informations (?:ne contiennent pas|ne pr[ée]cisent pas)[^.!?]{3,100}?\.?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r",?\s*(?:car\s+)?je n['\u2019]ai pas (?:le|les) d[ée]marches(?: [àa] suivre)?(?: pour le moment)?\.?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r",?\s*(?:car\s+)?(?:les )?d[ée]marches (?:pr[ée]cises )?ne sont pas (?:indiqu[ée]es|pr[ée]cis[ée]es) "
+        r"(?:dans le contexte|pour le moment)\.?",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _strip_llm_hedging(text: str) -> str:
+    """Retire les formulations « je n'ai pas le détail… » — garde la redirection service client."""
+    out = (text or "").strip()
+    if not out:
+        return out
+    for pat in _LLM_HEDGING_PHRASE_RES:
+        out = pat.sub("", out)
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"\s+([,.!?])", r"\1", out)
+    out = re.sub(r"\.{2,}", ".", out)
+    # Rétablir une ponctuation propre entre deux phrases collées
+    out = re.sub(
+        r"([a-zàâäéèêëïîôùûüç0-9])\s+(Pour |Je vous invite|Contactez|Vous pouvez)",
+        r"\1. \2",
+        out,
+        flags=re.IGNORECASE,
+    )
+    return out.strip()
+
+_ANSWER_JUNK_MARKERS = (
+    "#demdikk", "#ligne", "encore plus proche de vous",
+    "bonne nouvelle |", "alerte info",
+    "mobiliteurbaine", "parcellesassainies",
+    "nouveaux arrets viennent", "ville de dakar",
+)
+
+_QUERY_STOPWORDS = frozenset({
+    "le", "la", "les", "de", "du", "des", "un", "une", "et", "en",
+    "est", "que", "qui", "sur", "par", "pour", "dans", "avec", "au",
+    "je", "il", "elle", "vous", "nous", "on", "ce", "se", "ne", "pas",
+    "plus", "quel", "quelle", "quels", "quelles", "comment", "quand",
+    "ou", "si", "mais", "donc", "car", "ici", "ya", "a", "mon", "ma",
+    "mes", "ton", "ta", "tes", "son", "sa", "ses", "notre", "votre",
+})
+
+_COMMON_QUERY_WORDS = frozenset({
+    "billet", "ticket", "bus", "ligne", "tarif", "prix", "horaire",
+    "service", "dem", "dikk", "demdikk", "transport", "voyage", "ddd",
+    "information", "infos", "question", "savoir", "connaitre", "connaître",
+})
+
+
+def _deepseek_missing_info(text: str) -> bool:
+    return bool(_LLM_MISSING_INFO_RE.search(text or ""))
+
+
+def _answer_looks_like_junk(text: str) -> bool:
+    """Chunk index / actualités réseaux sociaux — pas une réponse FAQ."""
+    if not (text or "").strip():
+        return True
+    t = _norm(text)
+    hits = sum(1 for m in _ANSWER_JUNK_MARKERS if m in t)
+    if hits >= 2:
+        return True
+    if hits >= 1 and ("#" in text or text.count("#") >= 2):
+        return True
+    if text.count("#") >= 3:
+        return True
+    return False
+
+
+def _query_significant_words(qn: str) -> list[str]:
+    return [w for w in (qn or "").split() if w not in _QUERY_STOPWORDS and len(w) >= 3]
+
+
+def _answer_relevant_to_question(question: str, answer: str, qn: str | None = None) -> bool:
+    """Au moins un mot distinctif de la question doit apparaître dans la réponse."""
+    qn = qn if qn is not None else _norm(question)
+    ans_n = _lemmatize(answer)
+    words = _query_significant_words(qn)
+    if not words:
+        return True
+    specific = [w for w in words if w not in _COMMON_QUERY_WORDS]
+    check = specific if specific else words
+    if not any(w in ans_n for w in check):
+        return False
+    return _answer_has_topic_substance(qn, answer)
+
+
+_TOPIC_SUBSTANCE: dict[str, tuple[str, ...]] = {
+    "remboursement": (
+        "demande de remboursement", "demandes de remboursement",
+        "delai indicatif", "jours ouvr", "traitees par le service",
+        "mobile money", "3 a 5 jours",
+    ),
+    "annulation": ("frais", "condition", "24h", "report", "annul"),
+    "report": ("frais", "24h", "modification", "report", "voyage"),
+    "reservation": ("modalite", "modifier", "reservation", "billet", "application", "cgu"),
+}
+
+
+def _answer_has_topic_substance(qn: str, answer: str) -> bool:
+    """Pour les sujets précis, la réponse doit contenir du contenu, pas seulement un titre de rubrique."""
+    ans_n = _lemmatize(answer)
+    for topic, hints in _TOPIC_SUBSTANCE.items():
+        if topic in qn:
+            return any(h in ans_n for h in hints)
+    return True
+
+
+def _block_is_title_only(block: str) -> bool:
+    """Bloc = titre de section sans corps (ex. « Gestion des réservations… » seul)."""
+    lines = [l.strip() for l in (block or "").split("\n") if l.strip()]
+    if not lines:
+        return True
+    if len(lines) == 1:
+        return len(lines[0]) < 120
+    if len(block or "") < 100:
+        return not any(l.startswith(("\u2013", "-", "\u2022")) for l in lines[1:])
+    return False
+
+
+def _expand_block_with_following(blocks: list[str], idx: int, max_chars: int = 1800) -> str:
+    """Titres de rubrique → inclure les sous-sections suivantes."""
+    parts = [blocks[idx]]
+    for j in range(idx + 1, len(blocks)):
+        if len("\n\n".join(parts)) >= max_chars:
+            break
+        nxt = blocks[j]
+        if _answer_looks_like_junk(nxt) or _block_looks_like_nav_junk(nxt):
+            break
+        parts.append(nxt)
+        combined = "\n\n".join(parts)
+        if not _block_is_title_only(combined) and len(combined) >= 100:
+            if j + 1 < len(blocks) and _block_is_title_only(blocks[j + 1]):
+                break
+    return "\n\n".join(parts)[:max_chars]
+
+
+def _strip_section_number(line: str) -> str:
+    """Enlève un préfixe du type « 8. » ou « 8.2. » laissé sur le site."""
+    import re as _re
+    return _re.sub(r"^\d+(?:\.\d+)*\.?\s+", "", (line or "").strip())
+
+
+def _line_looks_like_section_title(stripped: str) -> bool:
+    """Titre de rubrique / sous-section (avec ou sans numéro)."""
+    import re as _re
+    if not stripped or stripped.lower().startswith(("http", "www.", "agent-ia", "home")):
+        return False
+    if stripped.startswith(("\u2013", "-", "\u2022")):
+        return False
+    title = _strip_section_number(stripped)
+    return 8 <= len(title) <= 72
+
+
+def _clip_at_next_section_title(text: str) -> str:
+    """Coupe après le premier bloc utile, au titre de section suivant."""
+    if not text:
+        return ""
+    lines = text.replace("\r\n", "\n").split("\n")
+    if len(lines) <= 2:
+        return text.strip()
+    kept = [lines[0]]
+    for line in lines[1:]:
+        stripped = line.strip()
+        if not stripped:
+            kept.append(line)
+            continue
+        if (
+            len(kept) >= 2
+            and _line_looks_like_section_title(stripped)
+            and not stripped.endswith("?")
+        ):
+            break
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _split_chatbot_page_blocks(page_text: str) -> list[str]:
+    """Découpe chatbot-2303 en blocs (titres + contenu, séparateurs souvent \\n simple)."""
     import re as _re
 
+    if not page_text:
+        return []
+    lines = page_text.replace("\r\n", "\n").split("\n")
+    blocks: list[str] = []
+    current: list[str] = []
+
+    def _flush():
+        nonlocal current
+        if current:
+            blk = "\n".join(current).strip()
+            if len(blk) >= 35:
+                blocks.append(blk)
+            current = []
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            _flush()
+            continue
+        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        is_header = (
+            _line_looks_like_section_title(stripped)
+            and (
+                nxt.startswith(("\u2013", "-", "\u2022"))
+                or _re.match(r"^[A-ZÀ-ÖØ-Þ0-9]", _strip_section_number(nxt))
+                or "?" in stripped
+            )
+        )
+        if is_header and current:
+            _flush()
+        current.append(line)
+    _flush()
+    return blocks
+
+
+def _block_looks_like_nav_junk(block: str) -> bool:
+    t = (block or "").lower()
+    return any(m in t for m in (
+        "agent-ia", "guide complet des services", "home\nagent-ia",
+        "tout savoir pour vos deplacements",
+    ))
+
+
+def _search_chatbot_page_blocks(question: str) -> dict | None:
+    """
+    Recherche par blocs sur chatbot-2303.
+    Le site n'utilise plus de titres markdown (## / ###) : on découpe le texte
+    live par titres de section et questions FAQ.
+    """
     qn = _lemmatize(question)
     if not qn or len(qn) < 3:
         return None
 
-    _STOPWORDS = {
-        "le", "la", "les", "de", "du", "des", "un", "une", "et", "en",
-        "est", "que", "qui", "sur", "par", "pour", "dans", "avec", "au",
-        "je", "il", "elle", "vous", "nous", "on", "ce", "se", "ne", "pas",
-        "plus", "quel", "quelle", "quels", "quelles", "comment", "quand",
-        "ou", "si", "mais", "donc", "car", "ici", "ya", "a",
-    }
-    query_words = [w for w in qn.split() if w not in _STOPWORDS and len(w) >= 3]
+    query_words = [w for w in qn.split() if w not in _QUERY_STOPWORDS and len(w) >= 3]
     if not query_words:
         return None
 
@@ -1235,68 +1754,107 @@ def _smart_search_chatbot_page(question: str) -> dict | None:
     if not page_text:
         return None
 
-    def _word_score(text: str, title_bonus: int = 1) -> int:
-        n = _lemmatize(text)
-        return sum(title_bonus for w in query_words if w in n)
+    # Extraction directe pour sujets connus
+    qn_raw = _norm(question)
+    _topic_markers: list[tuple[str, tuple[str, ...]]] = [
+        ("perturbation", ("Gestion des perturbations", "Communication de crise", "Incidents techniques")),
+        ("enfant", ("carte pour mon enfant", "Puis-je obtenir une carte pour mon enfant")),
+        ("bagage", (
+            "Politique bagages",
+            "Politique des Bagages",
+            "Bagages et colis : règles et conditions",
+            "Bagages à bord",
+        )),
+        ("recrutement", ("recrutement", "Recrutement", "offres d'emploi")),
+        ("emploi", ("recrutement", "Recrutement", "offres d'emploi")),
+        ("remboursement", (
+            "Remboursement",
+            "Les demandes de remboursement",
+            "Remboursement de billet",
+        )),
+        ("annulation", ("Annulation et report", "Annulation/Report")),
+        ("report", ("Annulation et report", "report de votre voyage")),
+        ("reservation", ("Réservation et modification", "Gestion des réservations")),
+    ]
+    for key, markers in _topic_markers:
+        if key in qn_raw:
+            section = _extract_section_priority(page_text, markers, max_chars=1800)
+            if section and len(section) >= 40 and not _block_looks_like_nav_junk(section):
+                section = _clip_at_next_section_title(section)
+                result = _make_chatbot_result(section)
+                result["sources"] = [{"title": "FAQ Dakar Dem Dikk", "url": url, "score": 0.95}]
+                if result.get("results"):
+                    result["results"][0]["url"] = url
+                return result
 
-    # ── Niveau 1 : sous-sections ### (réponse la plus précise) ───────────────
-    subsections = _re.split(r'\n(?=### )', page_text)
-    best_sub = None
-    best_sub_score = 0
-
-    for raw in subsections:
-        if not raw.strip() or len(raw) < 50:
-            continue
-        first_line = raw.split('\n')[0]
-        # Exiger que le titre ### lui-même contienne un mot-clé
-        title_score = _word_score(first_line, title_bonus=3)
-        if title_score == 0:
-            continue
-        total = title_score + _word_score(raw, title_bonus=1)
-        if total > best_sub_score:
-            best_sub_score = total
-            best_sub = raw
-
-    if best_sub and best_sub_score >= 3:
-        section = best_sub[:1500]
-        section = _clip_at_next_subheading(section)
-        if section and len(section) >= 60:
-            result = _make_chatbot_result(section)
-            confidence = round(best_sub_score / max(len(query_words), 1), 2)
-            result["sources"] = [{"title": "Dakar Dem Dikk", "url": url, "score": confidence}]
-            result["results"][0]["url"] = url
-            return result
-
-    # ── Niveau 2 : sections ## (réponse plus large) ───────────────────────────
-    sections_raw = _re.split(r'\n(?=## \d+\.)', page_text)
-    best_section = None
+    blocks = _split_chatbot_page_blocks(page_text)
+    best = None
     best_score = 0
 
-    for raw in sections_raw:
-        if not raw.strip():
+    for block in blocks:
+        if _answer_looks_like_junk(block) or _block_looks_like_nav_junk(block):
             continue
-        cleaned = _strip_nav_content(raw)
-        if not cleaned or len(cleaned) < 80:
-            continue
-        first_line = cleaned.split('\n')[0]
-        total = _word_score(first_line, title_bonus=3) + _word_score(cleaned, title_bonus=1)
-        if total > best_score:
-            best_score = total
-            best_section = cleaned
+        first = block.split("\n")[0]
+        title_n = _lemmatize(first)
+        body_n = _lemmatize(block)
+        score = 0
+        for w in query_words:
+            if w in title_n:
+                score += 4
+            elif w in body_n:
+                score += 1
+        if not _block_is_title_only(block):
+            score += 3
+        if any(l.startswith(("\u2013", "-", "\u2022")) for l in block.split("\n")[1:]):
+            score += 2
+        if _block_is_title_only(block):
+            score -= 4
+        first_norm = _norm(first)
+        for w in query_words:
+            if first_norm == w or first_norm.startswith(w + " ") or first_norm.endswith(" " + w):
+                score += 6
+        if score > best_score:
+            best_score = score
+            best = block
 
-    if best_score < 1 or not best_section:
+    min_score = 3 if len(query_words) == 1 else 2
+    if not best or best_score < min_score:
         return None
 
-    section = best_section[:2500]
-    section = _clip_at_next_top_heading(section)
-    if not section or len(section) < 60:
-        return None
+    # FAQ : question seule (« … ? ») ou titre de rubrique → inclure les blocs suivants
+    try:
+        bi = blocks.index(best)
+        first_line = best.split("\n")[0].strip()
+        if first_line.endswith("?") and bi + 1 < len(blocks):
+            nxt = blocks[bi + 1]
+            if (
+                not _answer_looks_like_junk(nxt)
+                and not _block_looks_like_nav_junk(nxt)
+                and len(nxt.strip()) >= 20
+            ):
+                best = best + "\n\n" + nxt.strip()
+        elif _block_is_title_only(best):
+            best = _expand_block_with_following(blocks, bi)
+    except ValueError:
+        pass
 
+    section = _clip_at_next_section_title(best[:1800])
     result = _make_chatbot_result(section)
-    confidence = round(best_score / max(len(query_words), 1), 2)
-    result["sources"] = [{"title": "Dakar Dem Dikk", "url": url, "score": confidence}]
-    result["results"][0]["url"] = url
+    result["sources"] = [{
+        "title": "FAQ Dakar Dem Dikk",
+        "url": url,
+        "score": round(best_score / max(len(query_words), 1), 2),
+    }]
+    if result.get("results"):
+        result["results"][0]["url"] = url
     return result
+
+
+def _smart_search_chatbot_page(question: str) -> dict | None:
+    """
+    Fallback générique sur la page chatbot-2303 (titres plain-text, pas de ##).
+    """
+    return _search_chatbot_page_blocks(question)
 
 
 def _fallback_presentation_page(question: str) -> dict | None:
@@ -1362,15 +1920,9 @@ def _is_presentation_query(question: str, qn: str | None = None) -> bool:
 
 def _fallback_from_site(question: str) -> dict | None:
     """
-    Fallback universel : cherche la meilleure section sur la page chatbot-2303
-    en comparant les mots de la question aux titres et contenus des sections.
-    Plus besoin de lister des mots-clés manuellement.
+    Fallback universel : recherche par blocs sur chatbot-2303 (sans titres ##).
     """
-    url = "https://demdikk.sn/chatbot-2303/"
-    page_text = _fetch_page_text(url)
-    if not page_text:
-        return None
-    return _smart_search_chatbot_page(question)
+    return _search_chatbot_page_blocks(question)
 
 
 def _fix_orphan_subitems(text: str) -> str:
@@ -1530,13 +2082,59 @@ def _rag_answer_usable(data: dict) -> bool:
     return False
 
 
+def _rag_answer_trustworthy(data: dict, question: str, qn: str | None = None) -> bool:
+    """RAG exploitable ET pertinent (pas un chunk actualité / hors-sujet)."""
+    if not _rag_answer_usable(data):
+        return False
+    qn = qn if qn is not None else _norm(question)
+    ans = (data.get("answer") or "").strip()
+    if _answer_looks_like_junk(ans):
+        return False
+    return _answer_relevant_to_question(question, ans, qn)
+
+
+def _prepare_final_answer(data: dict) -> dict:
+    """Réponse finale sans reformulation LLM (contenu site / index tel quel, nettoyé)."""
+    out = dict(data)
+    cleaned = _clean_raw_answer(out.get("answer") or "")
+    if cleaned:
+        out["answer"] = cleaned
+    out["llm_enhanced"] = False
+    out["gemini_enhanced"] = False
+    return out
+
+
+def _enhance_if_safe(data: dict, question: str, client_history: list | None = None) -> dict:
+    """
+    Reformule avec DeepSeek (voix Maï) à partir du contenu site/index.
+    Si DeepSeek refuse ou invente → retombe sur le texte site nettoyé.
+    """
+    fallback = _prepare_final_answer(data)
+    skip_types = {"all_lines_summary", "line_X", "lines_to_stop", "line_details", "city_info"}
+    if data.get("query_type") in skip_types or data.get("is_line_query"):
+        return fallback
+    cfg = _init_deepseek()
+    if cfg is None:
+        return fallback
+    enhanced = _enhance_with_deepseek(data, question, client_history)
+    ans = (enhanced.get("answer") or "").strip()
+    if (
+        enhanced.get("llm_enhanced")
+        and ans
+        and len(ans) >= 20
+        and not _deepseek_missing_info(ans)
+    ):
+        return enhanced
+    return fallback
+
+
 # ── Envelopper /ask avec DeepSeek ────────────────────────────────────────────
 _original_ask = app.view_functions.get("ask")
 
 if _original_ask:
     @functools.wraps(_original_ask)
     def _ask_with_deepseek():
-        from flask import request, jsonify
+        from flask import request, jsonify, g
         # Récupérer la question avant l'appel original
         body = request.get_json(silent=True) or {}
         question = body.get("question", "")
@@ -1546,33 +2144,35 @@ if _original_ask:
             client_history = _parse_client_history(body.get("conversationHistory"))
         qn = _norm(question)
 
+        recovery = _try_typo_recovery(question, qn)
+        if recovery:
+            fixed_q, fixed_qn, corrs = recovery
+            if _should_apply_typo_fix(question, qn, fixed_q, fixed_qn, corrs):
+                question = fixed_q
+                qn = fixed_qn
+
+        def _reply(data, enhance=True):
+            payload = _enhance_if_safe(data, question, client_history) if enhance else data
+            return jsonify(payload)
+
         conv_kind = _conversational_kind(question, qn)
         if conv_kind:
             return jsonify(_generate_friendly_reply(question, client_history, conv_kind))
+
+        # Publicité / partenariat — avant RAG (évite inférence arrêt « de la »)
+        if _is_publicite_query(qn):
+            fb_pub = _fallback_publicite_partenariat(question)
+            if fb_pub and fb_pub.get("answer"):
+                return _reply(fb_pub)
 
         # ── Présentation DDD (nom de la société, « c'est quoi DDD », etc.) ───
         if _is_presentation_query(question, qn):
             fb_pres = _fallback_presentation_page(question)
             if fb_pres:
-                enhanced_pres = _enhance_with_deepseek(fb_pres, question, client_history)
-                return jsonify(enhanced_pres)
+                return _reply(fb_pres)
 
-        # Hors-sujet strict uniquement (sport, météo, charabia — pas salutations)
-        _qwords = set(qn.split())
-        _transport_ctx = (
-            "bus", "ligne", "transport", "voyage", "dem dikk", "demdikk",
-            "reservation", "billet", "ticket", "abonnement", "tek dem",
-            "carte", "colis", "horaire", "tarif", "prix", "contact", "agence",
-            "interurbain", "touba", "thiès", "thies", "saint-louis", "fatick",
-        )
-        _off_topic_like = (
-            _question_looks_gibberish_normed(qn)
-            or (
-                _qwords & _OFF_TOPIC_WORDS
-                and not any(k in qn for k in _transport_ctx)
-            )
-        )
-        if _off_topic_like:
+        # Hors-sujet : mots ambigus (sport, météo…) seulement sans contexte transport DDD
+        if _is_strict_off_topic(question, qn):
             _off = {
                 "answer": _OFF_TOPIC_REPLY,
                 "summary": _OFF_TOPIC_REPLY[:200],
@@ -1585,7 +2185,8 @@ if _original_ask:
             }
             return jsonify(_off)
 
-        # Appeler le handler original
+        # Transmettre la question corrigée (typos) à app_backup — il relit request.get_json() sinon.
+        g.resolved_question = question
         original_response = _original_ask()
 
         # Extraire les données JSON de la réponse
@@ -1598,13 +2199,16 @@ if _original_ask:
                 resp_obj, *rest = original_response if isinstance(original_response, tuple) else (original_response,)
                 data = resp_obj.get_json(force=True) or {}
 
+            # Interurbain structuré : ne pas écraser par fallback site / LLM
+            if data.get("query_type") == "city_info":
+                return (_reply(data), *rest) if rest else _reply(data)
+
             # AIBD : forcer le fallback navette même si app_backup a renvoyé un arrêt (Ligne TAF TAF)
             _aibd_triggers = ("aibd", "aeroport", "navette", "blaise diagne", "blaise-diagne")
             if any(t in qn for t in _aibd_triggers):
                 fb_aibd = _fallback_from_site(question)
                 if fb_aibd:
-                    enhanced_aibd = _enhance_with_deepseek(fb_aibd, question, client_history)
-                    return (jsonify(enhanced_aibd), *rest) if rest else jsonify(enhanced_aibd)
+                    return (_reply(fb_aibd), *rest) if rest else _reply(fb_aibd)
 
             interurban_triggers = (
                 "senegal dem dikk",
@@ -1618,16 +2222,14 @@ if _original_ask:
             wants_interurban = any(t in qn for t in interurban_triggers)
             fb_i = _fallback_interurban(question)
             if fb_i and wants_interurban:
-                enhanced = _enhance_with_deepseek(fb_i, question, client_history)
-                return (jsonify(enhanced), *rest) if rest else jsonify(enhanced)
+                return (_reply(fb_i), *rest) if rest else _reply(fb_i)
 
             # Afrique Dem Dikk : prioritaire pour "gambie/senegal/banjul/afrique"
             af_triggers = ("afrique dem dikk", "afrique", "gambie", "gambia", "banjul", "senegal")
             wants_afrique = any(t in qn for t in af_triggers)
             fb_a = _fallback_afrique_dem_dikk(question)
             if fb_a and wants_afrique:
-                enhanced = _enhance_with_deepseek(fb_a, question, client_history)
-                return (jsonify(enhanced), *rest) if rest else jsonify(enhanced)
+                return (_reply(fb_a), *rest) if rest else _reply(fb_a)
 
             ans = (data.get("answer") or "").strip()
             if "je n'ai pas trouv" in ans.lower():
@@ -1637,10 +2239,17 @@ if _original_ask:
             if fb_i and "je n'ai pas trouv" in ans.lower():
                 data = fb_i
 
-            # Priorité index RAG (scraper.py → data/scraped.jsonl → indexer.py → metadata.json + embeddings.npy).
-            # Ne pas remplacer par du scraping live (_fallback_from_site / smart search) si la réponse
-            # issue de app_backup est déjà exploitable.
-            rag_ok = _rag_answer_usable(data)
+            # Priorité index RAG — ignorer les chunks non pertinents (actualités, etc.)
+            rag_ok = _rag_answer_trustworthy(data, question, qn)
+
+            if not rag_ok and not (
+                data.get("is_line_query") or data.get("is_city_query")
+                or data.get("query_type") in {"all_lines_summary", "line_X", "lines_to_stop", "line_details", "city_info"}
+            ):
+                fb_blocks = _search_chatbot_page_blocks(question)
+                if fb_blocks and fb_blocks.get("answer"):
+                    data = fb_blocks
+                    rag_ok = True
 
             # Application mobile : toujours préférer l'extrait page officielle (chatbot-2303)
             # lorsqu'il est disponible — l'index peut renvoyer un chunk « acceptable » (score)
@@ -1655,8 +2264,7 @@ if _original_ask:
             if any(k in qn for k in ("colis", "messagerie", "courrier")) and not rag_ok:
                 fb2 = _fallback_from_site(question)
                 if fb2:
-                    enhanced2 = _enhance_with_deepseek(fb2, question, client_history)
-                    return (jsonify(enhanced2), *rest) if rest else jsonify(enhanced2)
+                    return (_reply(fb2), *rest) if rest else _reply(fb2)
 
             # Fallback page officielle (scraping live) seulement si l'index n'a pas déjà répondu correctement.
             # RÈGLE : tout mot-clé qui déclenche un wants_* dans _fallback_from_site
@@ -1726,21 +2334,25 @@ if _original_ask:
             if any(k in qn for k in _presentation_triggers):
                 fb_pres = _fallback_presentation_page(question)
                 if fb_pres:
-                    enhanced_pres = _enhance_with_deepseek(fb_pres, question, client_history)
-                    return (jsonify(enhanced_pres), *rest) if rest else jsonify(enhanced_pres)
+                    return (_reply(fb_pres), *rest) if rest else _reply(fb_pres)
 
-            if any(k in qn for k in _site_triggers) and not rag_ok:
+            if (
+                any(k in qn for k in _site_triggers)
+                and not rag_ok
+                and data.get("query_type") != "city_info"
+            ):
                 fb3 = _fallback_from_site(question)
                 if fb3:
-                    enhanced3 = _enhance_with_deepseek(fb3, question, client_history)
-                    return (jsonify(enhanced3), *rest) if rest else jsonify(enhanced3)
+                    return (_reply(fb3), *rest) if rest else _reply(fb3)
 
             # ── Recherche générique intelligente (smart search) ───────────────
             # Toujours tenter une recherche par mots-clés sur la page chatbot-2303
             # SAUF pour les données structurées (lignes, arrêts, horaires).
             # Cela couvre automatiquement tous les sujets présents sur le site
             # sans nécessiter de fallback manuel pour chaque nouveau sujet.
-            _structured_types = {"all_lines_summary", "line_X", "lines_to_stop", "line_details"}
+            _structured_types = {
+                "all_lines_summary", "line_X", "lines_to_stop", "line_details", "city_info",
+            }
             is_structured = data.get("query_type") in _structured_types or data.get("is_line_query") or data.get("is_city_query")
             cur_ans = (data.get("answer") or "").strip()
             ans_seems_weak = (
@@ -1755,14 +2367,25 @@ if _original_ask:
                 # - le smart search a trouvé une section très pertinente (score >= 2 mots)
                 smart_score = (fb_smart or {}).get("sources", [{}])[0].get("score", 0)
                 if fb_smart and not rag_ok and (ans_seems_weak or smart_score >= 0.5):
-                    enhanced_smart = _enhance_with_deepseek(fb_smart, question, client_history)
-                    return (jsonify(enhanced_smart), *rest) if rest else jsonify(enhanced_smart)
+                    return (_reply(fb_smart), *rest) if rest else _reply(fb_smart)
 
-            enhanced = _enhance_with_deepseek(data, question, client_history)
+            if rag_ok:
+                final = _enhance_if_safe(data, question, client_history)
+                if not _block_looks_like_nav_junk(final.get("answer") or ""):
+                    return (_reply(data), *rest) if rest else _reply(data)
+                rag_ok = False
+                fb_fix = _search_chatbot_page_blocks(question)
+                if fb_fix and fb_fix.get("answer"):
+                    data = fb_fix
+                    final = _enhance_if_safe(data, question, client_history)
+                    if not _block_looks_like_nav_junk(final.get("answer") or ""):
+                        return (_reply(data), *rest) if rest else _reply(data)
+
+            enhanced = _enhance_if_safe(data, question, client_history)
             # Logger les requêtes sans réponse
             if "je n'ai pas trouv" in (enhanced.get("answer") or "").lower():
                 _log_unknown_query(question, reason="not_found")
-            return (jsonify(enhanced), *rest) if rest else jsonify(enhanced)
+            return (_reply(data), *rest) if rest else _reply(data)
         except Exception:
             return original_response
 
