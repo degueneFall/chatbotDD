@@ -337,10 +337,29 @@ def format_itinerary_prose(itineraire: str, titre_disp: str) -> str:
     return f"L'itinéraire passe par {', '.join(segments)}."
 
 
+def _duration_to_minutes(label: str) -> int:
+    s = (label or "").strip().lower()
+    m = re.match(r"(\d+)\s*h(?:\s*(\d+))?", s)
+    if m:
+        return int(m.group(1)) * 60 + int(m.group(2) or 0)
+    m = re.match(r"(\d+)\s*min", s)
+    if m:
+        return int(m.group(1))
+    return 0
+
+
+def _pick_representative_duration(labels: list[str]) -> str:
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    return min(labels, key=lambda x: (_duration_to_minutes(x), x))
+
+
 def format_duration_prose(durees: dict[str, str], departs: list[str] | None = None) -> str:
     if not durees:
         return ""
-    pairs: list[tuple[str, str]] = []
+    matched: list[str] = []
     seen_hours: set[int] = set()
     if departs:
         for d in departs:
@@ -353,17 +372,12 @@ def format_duration_prose(durees: dict[str, str], departs: list[str] | None = No
             dur = _lookup_duree(durees, d)
             if dur:
                 seen_hours.add(hour)
-                pairs.append((f"{hour}h", dur))
-    if not pairs and durees.get("default"):
-        return f"Comptez environ {durees['default']} de route."
-    if not pairs:
-        pairs = [(k, v) for k, v in durees.items() if k != "default" and v]
-    if not pairs:
+                matched.append(dur)
+    if not matched and durees.get("default"):
+        return f"environ {durees['default']} de route"
+    if not matched:
+        matched = [v for k, v in durees.items() if k != "default" and v]
+    if not matched:
         return ""
-    unique_durs = {dur for _, dur in pairs}
-    if len(unique_durs) == 1:
-        return f"Comptez environ {pairs[0][1]} de route."
-    if len(pairs) == 1:
-        return f"Comptez environ {pairs[0][1]} de route."
-    chunks = [f"{dur} (départ {tm})" for tm, dur in pairs]
-    return "Comptez environ " + " et ".join(chunks) + "."
+    dur = _pick_representative_duration(matched)
+    return f"environ {dur} de route"

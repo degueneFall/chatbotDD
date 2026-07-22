@@ -926,7 +926,7 @@ def _format_city_bus_sentence(
         meta = _city_route_meta(section, ville)
         dur_txt = format_duration_prose(meta.get("durees") or {}, times)
         if dur_txt:
-            sentence += f" — {dur_txt.rstrip('.')}"
+            sentence += f", {dur_txt.rstrip('.')}"
     return sentence + "."
 
 
