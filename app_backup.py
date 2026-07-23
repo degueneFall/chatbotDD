@@ -409,12 +409,21 @@ def _city_query_aspect(qn: str, question: str) -> str:
         return "full"
     if any(w in qn for w in ("reserver", "reservation", "reservez", "billet", "ticket")):
         return "reservation"
-    if any(w in qn for w in ("horaire", "heures", "heure")):
+    wants_itin = any(w in qn for w in ("itineraire", "trajet", "route", "passage"))
+    wants_horaires = any(
+        w in qn
+        for w in ("horaire", "horaires", "heures", "heure", "depart", "departs")
+    )
+    wants_duree = any(
+        w in qn
+        for w in ("duree", "durees", "temps", "combien de temps", "longtemps")
+    ) or re.search(r"\bcombi[eè]n\s+(?:de\s+)?temps\b", qn, re.I)
+    if wants_horaires and not wants_itin:
         return "horaires"
     if any(w in qn for w in ("prix", "tarif", "cout", "combien", "fcfa", "cher", "coute")):
         return "prix"
-    if any(w in qn for w in ("itineraire", "trajet", "route", "passage")):
-        return "itineraire"
+    if wants_itin or wants_duree:
+        return "itineraire_detail"
     if any(w in qn for w in ("arrivee", "contact", "telephone", "tel")):
         return "contact"
     return "clarify"
@@ -1011,6 +1020,36 @@ def _format_city_bus_sentence(
     return sentence + "."
 
 
+def _format_city_itinerary_detail_prose(
+    section: dict,
+    ville: str,
+    *,
+    itineraire: str,
+    jours: list[str],
+    horaires: list[str],
+    depart: str,
+    arrivee: str,
+    contacts: list[dict],
+) -> str:
+    """Itinéraire + horaires de départ + durée — sans prix ni réservation."""
+    titre_disp = _city_display_name(ville)
+    chunks: list[str] = []
+    if itineraire:
+        chunks.append(f"Itinéraire Dakar–{titre_disp} : {itineraire}.")
+    bus_sentence = _format_city_bus_sentence(
+        section, ville, jours, horaires, depart, arrivee, contacts,
+        include_duration=True,
+    )
+    if bus_sentence:
+        chunks.append(bus_sentence)
+    if chunks:
+        return " ".join(chunks)
+    return (
+        f"Détails non disponibles pour {titre_disp}. "
+        "Consultez demdikk.sn/reseau-interurbain/ ou le service client au +221 33 824 10 10."
+    )
+
+
 def _format_city_full_prose(
     section: dict,
     ville: str,
@@ -1114,6 +1153,18 @@ def _format_city_response_prose(section: dict, ville: str, aspect: str = "full")
         return (
             f"Itinéraire non disponible ici. Consultez demdikk.sn/reseau-interurbain/ "
             f"ou appelez le +221 33 824 10 10."
+        )
+
+    if aspect == "itineraire_detail":
+        return _format_city_itinerary_detail_prose(
+            section,
+            ville,
+            itineraire=itineraire,
+            jours=jours,
+            horaires=horaires_raw,
+            depart=depart,
+            arrivee=arrivee,
+            contacts=contacts,
         )
 
     if aspect == "contact":
@@ -1823,12 +1874,12 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
     # Compter uniquement les mots porteurs de sens (hors stopwords)
     qn_words = qn_check.split()
     meaningful = [w for w in qn_words if len(w) >= 2 and w not in _ENRICH_STOPWORDS]
-    if len(meaningful) >= 4:
-        return q
     if _is_smalltalk_question(q):
         return q
     entries = _parse_history_entries(history_raw)
     if not entries:
+        if len(meaningful) >= 4:
+            return q
         return q
     # Déjà explicite : ne pas dupliquer
     if _detect_city(_norm(q)) or _detect_line_number(q):
@@ -1836,6 +1887,15 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
 
     city_sec = _history_last_city_section(entries)
     line_num = _history_last_line_number(entries)
+
+    _CITY_DETAIL_FOLLOWUP_RE = re.compile(
+        r"\b(itineraire|trajet|horaire|heures?|depart|departs|duree|durees|"
+        r"tarif|prix|reserv|billet|contact|arrivee|passage|route)\b",
+        re.I,
+    )
+    if len(meaningful) >= 4:
+        if not (city_sec and _CITY_DETAIL_FOLLOWUP_RE.search(qn_check)):
+            return q
     if not city_sec and not line_num:
         # Fallback : si question très courte, enrichir avec la dernière question utilisateur
         if len(meaningful) <= 3:
@@ -1876,6 +1936,7 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
         r"|\bcombi[e\u00e8]n\s+(?:ca|\u00e7a)\s+co[u\u00fb]te?\b"  # combien ça coûte
         r"|\b[a\u00e0]\s+quelle\s+heure\b"             # à quelle heure
         r"|\bheures?\b"                                 # heure / heures (suivi contexte ville)
+        r"|\b(itineraire|trajet|duree|durees|passage)\b"  # détail trajet
         r"|\bcomment\s+(?:r[e\u00e9]server|partir|r[e\u00e9]server)\b",  # comment réserver
         re.IGNORECASE,
     )
