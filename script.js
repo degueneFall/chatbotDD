@@ -709,6 +709,9 @@ function answerHasStructuredBlockMarkers(text) {
 function looksLikeProseNotSectionTitle(line) {
   const s = (line || '').trim()
   if (!s) return true
+  if (/^(oui|non)$/i.test(s)) return true
+  if (/^[,.;]/.test(s)) return true
+  if (/\([A-Z]{2,6}\)\s*$/.test(s)) return true
   if (/\|/.test(s)) return true
   if (/->|→/.test(s)) return true
   if (/^plus\s+de\s+d[ée]tails\b/i.test(s)) return true

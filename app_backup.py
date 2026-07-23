@@ -420,9 +420,11 @@ def _city_query_aspect(qn: str, question: str) -> str:
     ) or re.search(r"\bcombi[eè]n\s+(?:de\s+)?temps\b", qn, re.I)
     if wants_horaires and not wants_itin:
         return "horaires"
+    if wants_duree and not wants_itin:
+        return "duree"
     if any(w in qn for w in ("prix", "tarif", "cout", "combien", "fcfa", "cher", "coute")):
         return "prix"
-    if wants_itin or wants_duree:
+    if wants_itin:
         return "itineraire_detail"
     if any(w in qn for w in ("arrivee", "contact", "telephone", "tel")):
         return "contact"
@@ -1050,6 +1052,34 @@ def _format_city_itinerary_detail_prose(
     )
 
 
+def _format_city_duration_prose(
+    section: dict,
+    ville: str,
+    *,
+    horaires: list[str],
+    depart: str,
+    arrivee: str,
+    contacts: list[dict],
+) -> str:
+    """Durée du trajet uniquement — sans itinéraire ni horaires."""
+    titre_disp = _city_display_name(ville)
+    horaires_blob = " ".join(horaires or [])
+    _, _, times = _extract_interurban_depart_info(
+        section, ville, horaires, depart, arrivee, contacts
+    )
+    meta = _city_route_meta(section, ville)
+    dur_txt = format_duration_prose(meta.get("durees") or {}, times)
+    if not dur_txt and horaires_blob:
+        _, durations = _split_horaires_raw(horaires)
+        dur_txt = format_duration_prose(durations, times)
+    if dur_txt:
+        return f"Le trajet vers {titre_disp} : {dur_txt.rstrip('.')}."
+    return (
+        f"Durée non disponible pour {titre_disp}. "
+        "Consultez demdikk.sn/reseau-interurbain/ ou le service client au +221 33 824 10 10."
+    )
+
+
 def _format_city_full_prose(
     section: dict,
     ville: str,
@@ -1145,6 +1175,16 @@ def _format_city_response_prose(section: dict, ville: str, aspect: str = "full")
         return (
             "Tarif non disponible ici. Consultez demdikk.sn/reseau-interurbain/ "
             "ou le service client au +221 33 824 10 10."
+        )
+
+    if aspect == "duree":
+        return _format_city_duration_prose(
+            section,
+            ville,
+            horaires=horaires_raw,
+            depart=depart,
+            arrivee=arrivee,
+            contacts=contacts,
         )
 
     if aspect == "itineraire":

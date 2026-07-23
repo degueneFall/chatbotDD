@@ -1164,8 +1164,8 @@ def _extract_section_for_marker(text: str, marker: str, max_chars: int = 1400) -
     """Extrait une section à partir d'un seul marqueur (titre de rubrique en début de ligne)."""
     if not text or not marker:
         return ""
-    t = text.replace("\r\n", "\n")
-    ml = marker.lower()
+    t = text.replace("\r\n", "\n").replace("\u2019", "'").replace("\u2018", "'")
+    ml = marker.lower().replace("\u2019", "'").replace("\u2018", "'")
     pos = 0
     while True:
         i = t.lower().find(ml, pos)
@@ -1174,11 +1174,18 @@ def _extract_section_for_marker(text: str, marker: str, max_chars: int = 1400) -
         line_start = t.rfind("\n", 0, i) + 1
         line_end = t.find("\n", i)
         line = t[line_start: line_end if line_end >= 0 else len(t)].strip()
-        if line.lower().startswith(ml[: min(len(ml), len(line))]) and len(line) <= len(marker) + 20:
+        line_body = _strip_section_number(line)
+        if (
+            line_body.lower().startswith(ml[: min(len(ml), len(line_body))])
+            and len(line) <= len(marker) + 25
+        ):
             return t[line_start: line_start + max_chars].strip()
         pos = i + 1
     i = t.lower().find(ml)
     if i >= 0:
+        # Marqueurs courts (ex. « CCO ») : pas de recherche au milieu d'un mot (« accompagnement »).
+        if len(ml) <= 4:
+            return ""
         return t[i: i + max_chars].strip()
     return ""
 
@@ -1270,28 +1277,30 @@ def _fetch_page_text(url: str) -> str | None:
         )
         text = container.get_text("\n", strip=True)
 
-        # Couper au début du bloc « cartes services / compteurs / articles récents »
-        # de la home — ces blocs polluent les pages quand Elementor les inclut.
-        cut_patterns = (
-            r"\bArticles?\s+r[ée]cents?\b",
-            r"\bVoir\s+toute\s+l[\u0027]actualit[ée]\b",
-            r"\bNos\s+derni[èe]res?\s+actualit[ée]s?\b",
-            r"\bR[ée]gie\s+publicitaire\b",
-            r"\bExp[ée]dition\s+de\s+courriers?\b",
-            r"\bPrestations?\s+m[ée]caniques?\b",
-            r"\bVoyageurs?\s+annuel\b",
-            r"\bClients?\s+satisfaits?\b",
-            r"\bProjets?\s+d[\u0027]innovation\b",
-            r"\bRESERVEZ?\s+UNE\s+PLACE\b",
-            r"\bDirection\s+G[ée]n[ée]rale\b",
-        )
-        earliest = len(text)
-        for pat in cut_patterns:
-            m = re.search(pat, text, flags=re.IGNORECASE)
-            if m and m.start() < earliest:
-                earliest = m.start()
-        if earliest < len(text):
-            text = text[:earliest].rstrip()
+        # Ne pas tronquer la FAQ chatbot-2303 (sections en bas de page : CCO, syndicats…).
+        if "chatbot-2303" not in url:
+            # Couper au début du bloc « cartes services / compteurs / articles récents »
+            # de la home — ces blocs polluent les pages quand Elementor les inclut.
+            cut_patterns = (
+                r"\bArticles?\s+r[ée]cents?\b",
+                r"\bVoir\s+toute\s+l[\u0027]actualit[ée]\b",
+                r"\bNos\s+derni[èe]res?\s+actualit[ée]s?\b",
+                r"\bR[ée]gie\s+publicitaire\b",
+                r"\bExp[ée]dition\s+de\s+courriers?\b",
+                r"\bPrestations?\s+m[ée]caniques?\b",
+                r"\bVoyageurs?\s+annuel\b",
+                r"\bClients?\s+satisfaits?\b",
+                r"\bProjets?\s+d[\u0027]innovation\b",
+                r"\bRESERVEZ?\s+UNE\s+PLACE\b",
+                r"\bDirection\s+G[ée]n[ée]rale\b",
+            )
+            earliest = len(text)
+            for pat in cut_patterns:
+                m = re.search(pat, text, flags=re.IGNORECASE)
+                if m and m.start() < earliest:
+                    earliest = m.start()
+            if earliest < len(text):
+                text = text[:earliest].rstrip()
 
         _page_cache[url] = (now, text)
         return text
@@ -1476,11 +1485,87 @@ def _lemmatize(text: str) -> str:
 
 _LLM_MISSING_INFO_RE = re.compile(
     r"je n['\u2019]ai pas (?:cette )?information(?: pour le moment)?|"
+    r"je n['\u2019]ai pas d['\u2019]information|"
     r"je n['\u2019]ai pas (?:le|les) d[ée]tail|"
+    r"je n['\u2019]ai pas trouv|"
+    r"pas d['\u2019]information (?:sur|dans|concernant|relative)|"
     r"dans mes informations(?: pour le moment)?|"
-    r"je n['\u2019]e dispose pas de (?:la|le|les|l['\u2019])?(?:liste|d[ée]tail)",
+    r"je n['\u2019]e dispose pas de (?:la|le|les|l['\u2019])?(?:liste|d[ée]tail|information|poste)",
     re.IGNORECASE,
 )
+
+_FAQ_FILLER_WORDS = frozenset({
+    "est", "quoi", "que", "quel", "quelle", "quels", "quelles", "sont",
+    "cest", "cette", "cela", "comme", "faire", "dire", "savoir", "connaitre",
+    "connaître", "signifie", "signifier", "veut", "veux", "peut", "peux",
+    "definition", "définition", "explique", "expliquer", "parle", "parler",
+})
+
+_STRUCTURED_QUERY_TYPES = frozenset({
+    "all_lines_summary", "line_X", "lines_to_stop", "line_details", "city_info",
+    "interurban_overview",
+})
+
+
+def _faq_query_tokens(qn: str) -> list[str]:
+    """Mots porteurs pour la recherche FAQ (sans « quoi », « est », etc.)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for w in (qn or "").split():
+        if w in _QUERY_STOPWORDS or w in _FAQ_FILLER_WORDS:
+            continue
+        if len(w) >= 3 or (len(w) >= 2 and w.isalpha()):
+            if w not in seen:
+                seen.add(w)
+                out.append(w)
+    return out
+
+
+def _chatbot_faq_score(result: dict | None) -> float:
+    if not result:
+        return 0.0
+    try:
+        return float((result.get("sources") or [{}])[0].get("score") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_structured_ask_response(data: dict) -> bool:
+    if not data:
+        return False
+    if data.get("is_line_query") or data.get("is_city_query"):
+        return True
+    return (data.get("query_type") or "") in _STRUCTURED_QUERY_TYPES
+
+
+def _answer_says_missing(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return True
+    if _deepseek_missing_info(t):
+        return True
+    tl = t.lower()
+    if "je n'ai pas trouv" in tl or "je n ai pas trouv" in tl:
+        return True
+    if re.search(r"je n['\u2019 ]ai pas d['\u2019]information", tl):
+        return True
+    if re.search(r"pas d['\u2019]information (?:sur|dans|concernant|relative)", tl):
+        return True
+    return False
+
+
+def _faq_answer_usable(fb: dict | None, question: str, qn: str | None = None) -> bool:
+    if not fb or not (fb.get("answer") or "").strip():
+        return False
+    ans = fb["answer"]
+    if _answer_looks_like_junk(ans) or _block_looks_like_nav_junk(ans):
+        return False
+    qn = qn if qn is not None else _norm(question)
+    tokens = _faq_query_tokens(qn)
+    if not tokens:
+        return True
+    ans_n = _lemmatize(ans)
+    return any(w in ans_n for w in tokens)
 
 _LLM_HEDGING_PHRASE_RES = (
     re.compile(
@@ -1583,6 +1668,11 @@ def _answer_relevant_to_question(question: str, answer: str, qn: str | None = No
     """Au moins un mot distinctif de la question doit apparaître dans la réponse."""
     qn = qn if qn is not None else _norm(question)
     ans_n = _lemmatize(answer)
+    faq_tokens = _faq_query_tokens(qn)
+    if faq_tokens:
+        if not any(w in ans_n for w in faq_tokens):
+            return False
+        return _answer_has_topic_substance(qn, answer)
     words = _query_significant_words(qn)
     if not words:
         return True
@@ -1654,9 +1744,26 @@ def _line_looks_like_section_title(stripped: str) -> bool:
     import re as _re
     if not stripped or stripped.lower().startswith(("http", "www.", "agent-ia", "home")):
         return False
-    if stripped.startswith(("\u2013", "-", "\u2022")):
+    if stripped.startswith(("\u2013", "-", "\u2022", ",", ";", ".", ":", "(", "«")):
+        return False
+    if stripped.endswith(":"):
+        return False
+    if _re.match(r"^\d+\.\s+[A-ZÀ-Ü]", stripped):
+        return True
+    if _re.match(r"^(Google Play|App Store|Sur iPhone|Sur Android)\b", stripped, _re.I):
         return False
     title = _strip_section_number(stripped)
+    if not title or title[0].islower():
+        return False
+    if len(title.split()) <= 2 and len(title) <= 15:
+        return False
+    if _re.search(
+        r"\b(est|sont|etait|étaient|peut|peuvent|permet|permettent|dispose|assure|"
+        r"contactez|suivez|consultez|telecharge|télécharge|acheter|voyager)\b",
+        title,
+        _re.I,
+    ):
+        return False
     return 8 <= len(title) <= 72
 
 
@@ -1667,6 +1774,7 @@ def _clip_at_next_section_title(text: str) -> str:
     lines = text.replace("\r\n", "\n").split("\n")
     if len(lines) <= 2:
         return text.strip()
+    first_norm = _norm(_strip_section_number(lines[0].strip()))
     kept = [lines[0]]
     for line in lines[1:]:
         stripped = line.strip()
@@ -1677,6 +1785,7 @@ def _clip_at_next_section_title(text: str) -> str:
             len(kept) >= 2
             and _line_looks_like_section_title(stripped)
             and not stripped.endswith("?")
+            and _norm(_strip_section_number(stripped)) != first_norm
         ):
             break
         kept.append(line)
@@ -1737,10 +1846,10 @@ def _search_chatbot_page_blocks(question: str) -> dict | None:
     live par titres de section et questions FAQ.
     """
     qn = _lemmatize(question)
-    if not qn or len(qn) < 3:
+    if not qn or len(qn) < 2:
         return None
 
-    query_words = [w for w in qn.split() if w not in _QUERY_STOPWORDS and len(w) >= 3]
+    query_words = _faq_query_tokens(qn)
     if not query_words:
         return None
 
@@ -1770,6 +1879,41 @@ def _search_chatbot_page_blocks(question: str) -> dict | None:
         ("annulation", ("Annulation et report", "Annulation/Report")),
         ("report", ("Annulation et report", "report de votre voyage")),
         ("reservation", ("Réservation et modification", "Gestion des réservations")),
+        ("disponibilite", (
+            "Disponibilité de l'application mobile Dem Dikk",
+            "Disponibilité de l'application mobile",
+        )),
+        ("application", (
+            "Disponibilité de l'application mobile Dem Dikk",
+            "Fonctionnalités de l'application mobile Dem Dikk",
+        )),
+        ("appli", (
+            "Disponibilité de l'application mobile Dem Dikk",
+        )),
+        ("google play", (
+            "Disponibilité de l'application mobile Dem Dikk",
+            "Google Play Store",
+            "Google Play",
+        )),
+        ("app store", (
+            "Disponibilité de l'application mobile Dem Dikk",
+            "App Store",
+        )),
+        ("cco", (
+            "Centre de Contrôle des Opérations (CCO)",
+            "Centre de Contrôle des Opérations",
+            "Centre de Controle des Operations",
+        )),
+        ("centre de controle", (
+            "Centre de Contrôle des Opérations (CCO)",
+            "Centre de Contrôle des Opérations",
+            "Centre de Controle des Operations",
+        )),
+        ("tour de controle", (
+            "Centre de Contrôle des Opérations (CCO)",
+            "tour de contrôle",
+            "tour de controle",
+        )),
     ]
     for key, markers in _topic_markers:
         if key in qn_raw:
@@ -1808,6 +1952,8 @@ def _search_chatbot_page_blocks(question: str) -> dict | None:
         for w in query_words:
             if first_norm == w or first_norm.startswith(w + " ") or first_norm.endswith(" " + w):
                 score += 6
+            if re.search(rf"\({re.escape(w)}\)", first, re.I):
+                score += 8
         if score > best_score:
             best_score = score
             best = block
@@ -1888,6 +2034,16 @@ _COMPANY_NAME_QUERIES = frozenset({
 })
 
 
+_PRESENTATION_EXCLUDE_HINTS = (
+    "cco", "centre de controle", "tour de controle",
+    "bagage", "remboursement", "annulation", "report", "reservation",
+    "colis", "messagerie", "tek dem", "carte", "pass", "geolocalisation",
+    "perturbation", "recrutement", "emploi", "ligne", "horaire", "tarif",
+    "billet", "navette", "aibd", "interurbain", "senegal dem dikk",
+    "louer un bus", "location", "publicite", "partenariat",
+)
+
+
 def _is_presentation_query(question: str, qn: str | None = None) -> bool:
     """
     Questions sur la société elle-même (présentation, identité, histoire…).
@@ -1895,6 +2051,8 @@ def _is_presentation_query(question: str, qn: str | None = None) -> bool:
     """
     qn = qn if qn is not None else _norm(question)
     if not qn:
+        return False
+    if any(h in qn for h in _PRESENTATION_EXCLUDE_HINTS):
         return False
     if qn in _COMPANY_NAME_QUERIES:
         return True
@@ -1972,6 +2130,90 @@ def _fix_orphan_subitems(text: str) -> str:
     return '\n'.join(result)
 
 
+_FAQ_AFFIRMATION_ONLY = frozenset({"oui", "non"})
+
+
+def _faq_line_is_subsection_label(line: str) -> bool:
+    ln = (line or "").strip()
+    if not ln.endswith(":"):
+        return False
+    label = ln[:-1].strip()
+    return 4 <= len(label) <= 55 and label[0].isupper()
+
+
+def _merge_broken_faq_lines(lines: list[str]) -> list[str]:
+    """Fusionne les lignes fragmentées par le scraping HTML (ex. « Oui » + « , Dakar… »)."""
+    import re
+
+    merged: list[str] = []
+    buf = ""
+    for ln in lines:
+        ln = ln.strip()
+        if not ln:
+            continue
+        low = ln.lower()
+        if low in _FAQ_AFFIRMATION_ONLY:
+            if buf:
+                merged.append(buf.strip())
+            buf = "Oui" if low == "oui" else "Non"
+            continue
+        is_cont = (
+            ln.startswith((",", ";", ")", "»", "«", "—", "–", "-", ".", ":"))
+            or (buf.endswith(",") or buf.endswith("'") or buf.endswith("d'") or buf.endswith("l'"))
+            or (buf and not re.search(r'[.!?»"]\s*$', buf) and len(ln) < 90)
+        )
+        if is_cont and buf:
+            buf += ln if ln.startswith((",", ";", ".", ":", ")", "»", "—", "–", "-")) else f" {ln}"
+        elif buf:
+            merged.append(buf.strip())
+            buf = ln
+        else:
+            buf = ln
+    if buf:
+        merged.append(buf.strip())
+    return merged
+
+
+def _format_faq_page_prose(text: str) -> str:
+    """Reformate un extrait FAQ chatbot-2303 en prose lisible (sans titres / « Oui » isolés)."""
+    import re
+
+    if not (text or "").strip():
+        return text or ""
+    raw = [ln.strip() for ln in text.replace("\r\n", "\n").split("\n") if ln.strip()]
+    if len(raw) <= 1:
+        return re.sub(r"\s+", " ", raw[0] if raw else text).strip()
+
+    title = raw[0]
+    body_in = raw[1:]
+    chunks = _merge_broken_faq_lines(body_in)
+    if not chunks:
+        return re.sub(r"\s+", " ", title).strip()
+
+    paragraphs: list[str] = []
+    i = 0
+    while i < len(chunks):
+        c = chunks[i]
+        if _faq_line_is_subsection_label(c) and i + 1 < len(chunks):
+            label = c[:-1].strip()
+            nxt = chunks[i + 1]
+            if nxt and nxt[0].isupper():
+                nxt = nxt[0].lower() + nxt[1:]
+            paragraphs.append(f"{label} : {nxt}")
+            i += 2
+        else:
+            paragraphs.append(c)
+            i += 1
+
+    paragraphs = [re.sub(r"\s+", " ", p).strip() for p in paragraphs if p.strip()]
+    paragraphs = [
+        re.sub(r"\b([ld])'\s+", r"\1'", p, flags=re.I) for p in paragraphs
+    ]
+    if len(paragraphs) == 1:
+        return paragraphs[0]
+    return "\n\n".join(paragraphs)
+
+
 def _light_clean(text: str) -> str:
     """Nettoyage minimal : retire seulement les ## de niveau section (## 8.) mais conserve
     les sous-titres ### et les tirets – pour que le frontend les rende en blocs."""
@@ -2044,7 +2286,8 @@ def _light_clean(text: str) -> str:
 
 def _make_chatbot_result(section: str) -> dict:
     """Construit un dict résultat standard depuis un extrait de page officielle."""
-    clean = _light_clean(section) if section else section
+    prose = _format_faq_page_prose(section) if section else section
+    clean = _light_clean(prose) if prose else prose
     return {
         "answer": clean,
         "summary": (clean or "")[:280],
@@ -2110,12 +2353,18 @@ def _prepare_final_answer(data: dict) -> dict:
 def _enhance_if_safe(data: dict, question: str, client_history: list | None = None) -> dict:
     """
     Reformule avec DeepSeek (voix Maï) à partir du contenu site/index.
-    Si DeepSeek refuse ou invente → retombe sur le texte site nettoyé.
+    Si DeepSeek refuse ou invente → retombe sur le texte site nettoyé ou FAQ live.
     """
     fallback = _prepare_final_answer(data)
-    skip_types = {"all_lines_summary", "line_X", "lines_to_stop", "line_details", "city_info", "interurban_overview"}
+    skip_types = set(_STRUCTURED_QUERY_TYPES)
     if data.get("query_type") in skip_types or data.get("is_line_query"):
         return fallback
+
+    if _answer_says_missing(fallback.get("answer") or ""):
+        fb = _search_chatbot_page_blocks(question)
+        if _faq_answer_usable(fb, question):
+            return _prepare_final_answer(fb)
+
     cfg = _init_deepseek()
     if cfg is None:
         return fallback
@@ -2126,7 +2375,16 @@ def _enhance_if_safe(data: dict, question: str, client_history: list | None = No
         and ans
         and len(ans) >= 20
         and not _deepseek_missing_info(ans)
+        and not _answer_says_missing(ans)
     ):
+        return enhanced
+
+    if _answer_says_missing(ans):
+        fb = _search_chatbot_page_blocks(question)
+        if _faq_answer_usable(fb, question):
+            return _prepare_final_answer(fb)
+
+    if ans and not _answer_says_missing(ans):
         return enhanced
     return fallback
 
@@ -2211,7 +2469,7 @@ if _original_ask:
             if any(t in qn for t in _aibd_triggers):
                 fb_aibd = _fallback_from_site(question)
                 if fb_aibd:
-                    return (_reply(fb_aibd), *rest) if rest else _reply(fb_aibd)
+                    return (_reply(fb_aibd, enhance=False), *rest) if rest else _reply(fb_aibd, enhance=False)
 
             interurban_triggers = (
                 "senegal dem dikk",
@@ -2242,17 +2500,8 @@ if _original_ask:
             if fb_i and "je n'ai pas trouv" in ans.lower():
                 data = fb_i
 
-            # Priorité index RAG — ignorer les chunks non pertinents (actualités, etc.)
             rag_ok = _rag_answer_trustworthy(data, question, qn)
-
-            if not rag_ok and not (
-                data.get("is_line_query") or data.get("is_city_query")
-                or data.get("query_type") in {"all_lines_summary", "line_X", "lines_to_stop", "line_details", "city_info"}
-            ):
-                fb_blocks = _search_chatbot_page_blocks(question)
-                if fb_blocks and fb_blocks.get("answer"):
-                    data = fb_blocks
-                    rag_ok = True
+            is_structured = _is_structured_ask_response(data)
 
             # Application mobile : toujours préférer l'extrait page officielle (chatbot-2303)
             # lorsqu'il est disponible — l'index peut renvoyer un chunk « acceptable » (score)
@@ -2267,7 +2516,7 @@ if _original_ask:
             if any(k in qn for k in ("colis", "messagerie", "courrier")) and not rag_ok:
                 fb2 = _fallback_from_site(question)
                 if fb2:
-                    return (_reply(fb2), *rest) if rest else _reply(fb2)
+                    return (_reply(fb2, enhance=False), *rest) if rest else _reply(fb2, enhance=False)
 
             # Fallback page officielle (scraping live) seulement si l'index n'a pas déjà répondu correctement.
             # RÈGLE : tout mot-clé qui déclenche un wants_* dans _fallback_from_site
@@ -2346,47 +2595,37 @@ if _original_ask:
             ):
                 fb3 = _fallback_from_site(question)
                 if fb3:
-                    return (_reply(fb3), *rest) if rest else _reply(fb3)
+                    return (_reply(fb3, enhance=False), *rest) if rest else _reply(fb3, enhance=False)
 
-            # ── Recherche générique intelligente (smart search) ───────────────
-            # Toujours tenter une recherche par mots-clés sur la page chatbot-2303
-            # SAUF pour les données structurées (lignes, arrêts, horaires).
-            # Cela couvre automatiquement tous les sujets présents sur le site
-            # sans nécessiter de fallback manuel pour chaque nouveau sujet.
-            _structured_types = {
-                "all_lines_summary", "line_X", "lines_to_stop", "line_details", "city_info",
-            }
-            is_structured = data.get("query_type") in _structured_types or data.get("is_line_query") or data.get("is_city_query")
-            cur_ans = (data.get("answer") or "").strip()
-            ans_seems_weak = (
-                "je n'ai pas trouv" in cur_ans.lower()
-                or not cur_ans
-                or (data.get("sources", [{}])[0].get("title", "") in ("Source", "", None) and not data.get("results"))
-            )
+            # ── FAQ chatbot-2303 : recherche systématique (hors requêtes structurées) ──
+            fb_faq = None
             if not is_structured:
-                fb_smart = _smart_search_chatbot_page(question)
-                # Utiliser le smart search si :
-                # - la réponse actuelle est faible/absente, OU
-                # - le smart search a trouvé une section très pertinente (score >= 2 mots)
-                smart_score = (fb_smart or {}).get("sources", [{}])[0].get("score", 0)
-                if fb_smart and not rag_ok and (ans_seems_weak or smart_score >= 0.5):
-                    return (_reply(fb_smart), *rest) if rest else _reply(fb_smart)
+                fb_faq = _search_chatbot_page_blocks(question)
+                faq_score = _chatbot_faq_score(fb_faq)
+                cur_ans = (data.get("answer") or "").strip()
+                ans_weak = (
+                    _answer_says_missing(cur_ans)
+                    or not cur_ans
+                    or not rag_ok
+                    or not _answer_relevant_to_question(question, cur_ans, qn)
+                )
+                if fb_faq and _faq_answer_usable(fb_faq, question, qn) and (faq_score >= 0.5 or ans_weak):
+                    return (_reply(fb_faq, enhance=False), *rest) if rest else _reply(fb_faq, enhance=False)
 
             if rag_ok:
-                final = _enhance_if_safe(data, question, client_history)
-                if not _block_looks_like_nav_junk(final.get("answer") or ""):
+                enhanced = _enhance_if_safe(data, question, client_history)
+                ans = (enhanced.get("answer") or "").strip()
+                if not _block_looks_like_nav_junk(ans) and not _answer_says_missing(ans):
                     return (_reply(data), *rest) if rest else _reply(data)
-                rag_ok = False
-                fb_fix = _search_chatbot_page_blocks(question)
-                if fb_fix and fb_fix.get("answer"):
-                    data = fb_fix
-                    final = _enhance_if_safe(data, question, client_history)
-                    if not _block_looks_like_nav_junk(final.get("answer") or ""):
-                        return (_reply(data), *rest) if rest else _reply(data)
 
             enhanced = _enhance_if_safe(data, question, client_history)
-            # Logger les requêtes sans réponse
-            if "je n'ai pas trouv" in (enhanced.get("answer") or "").lower():
+            if _answer_says_missing(enhanced.get("answer") or ""):
+                if not fb_faq:
+                    fb_faq = _search_chatbot_page_blocks(question)
+                if _faq_answer_usable(fb_faq, question, qn):
+                    return (_reply(fb_faq, enhance=False), *rest) if rest else _reply(fb_faq, enhance=False)
+                _log_unknown_query(question, reason="not_found")
+            elif "je n'ai pas trouv" in (enhanced.get("answer") or "").lower():
                 _log_unknown_query(question, reason="not_found")
             return (_reply(data), *rest) if rest else _reply(data)
         except Exception:
