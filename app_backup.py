@@ -125,6 +125,22 @@ def _norm(s: str) -> str:
     return s
 
 
+_QUERY_ACRONYMS = {
+    "sdd": "senegal dem dikk",
+    "ddd": "dakar dem dikk",
+}
+
+
+def _expand_query_acronyms(question: str) -> str:
+    """Développe les acronymes connus (insensible à la casse : sdd, SDD…)."""
+    q = (question or "").strip()
+    if not q:
+        return q
+    for acr, expansion in _QUERY_ACRONYMS.items():
+        q = re.sub(rf"(?<!\w){re.escape(acr)}(?!\w)", expansion, q, flags=re.I)
+    return q
+
+
 # ── Correction de fautes ──────────────────────────────────────────────────────
 _TYPO_MAP = {
     "reservaton":  "réservation", "reservasion": "réservation",
@@ -188,6 +204,7 @@ _OFF_TOPIC_REPLY_TEXT = (
 _TRANSPORT_CONTEXT_MARKERS = (
     "bus", "ligne", "lignes", "arret", "arrets", "transport", "voyage",
     "dem dikk", "demdikk", "ddd",
+    "interurbain", "senegal dem dikk", "sdd",
     "reservation", "billet", "ticket", "abonnement", "tek dem",
     "carte", "colis", "horaire", "horaires", "tarif", "prix", "contact", "agence",
     "interurbain", "touba", "thies", "thiès", "saint-louis", "fatick",
@@ -292,6 +309,7 @@ _INTERURBAIN_OVERVIEW_TRIGGERS = (
     "réseau-interurbain",
     "senegal dem dikk",
     "sénégal dem dikk",
+    "sdd",
     "gare routiere de dieuppeul",
     "gare routière de dieuppeul",
 )
@@ -399,6 +417,270 @@ def _is_city_only_query(qn: str, section: dict) -> bool:
     if all(t in city_names for t in tokens):
         return True
     return False
+
+
+# ── Comparaisons (« X vs Y », « différence entre X et Y »…) ───────────────────
+_RE_COMP_DIFF = re.compile(
+    r"(?:quelle\s+est\s+la\s+)?diff[eé]rence\s+(?:de\s+\w+\s+)?entre\s+(.+?)\s+et\s+(.+?)\s*$"
+    r"|(?:quelle\s+est\s+la\s+)?diff[eé]rence\s+(?:entre|de)\s+(.+?)\s+et\s+(.+?)\s*$",
+    re.I,
+)
+_RE_COMP_LEQUEL = re.compile(
+    r"lequel(?:le)?(?:s)?\s+(?:entre|de)\s+(.+?)\s+et\s+(.+?)(?:\s+(?:est|sont)\s+.+)?\s*$",
+    re.I,
+)
+_RE_COMP_MOINS_CHER = re.compile(
+    r"(?:entre|de)\s+(.+?)\s+et\s+(.+?)\s+(?:est\s+)?(?:le\s+)?(?:moins|plus)\s+cher(?:e)?\s*$"
+    r"|^(.+?)\s+et\s+(.+?)\s*,?\s*(?:le\s+)?(?:moins|plus)\s+cher(?:e)?\s*$",
+    re.I,
+)
+_RE_COMP_VS = re.compile(r"^(.+?)\s+(?:vs\.?|versus)\s+(.+?)\s*$", re.I)
+_RE_COMP_OU = re.compile(
+    r"^(?:c['\u2019]est\s+)?(.+?)\s+ou\s+(.+?)\s*\??\s*$",
+    re.I,
+)
+_COMP_OU_SKIP = re.compile(
+    r"\b(comment|pourquoi|quand|combien|est ce que|peut on|puis je)\b",
+    re.I,
+)
+
+
+def _clean_comparison_part(part: str) -> str:
+    p = (part or "").strip().strip("?.!,;:")
+    p = re.sub(r"^(?:le|la|les|l['\u2019]|un|une|des|du|de)\s+", "", p, flags=re.I)
+    p = re.sub(r"\s+(?:est|sont)\b(?:\s+.*)?$", "", p, flags=re.I)
+    return p.strip()
+
+
+def _comparison_focus_from_question(question: str) -> str | None:
+    """Aspect cible extrait de la question comparative (prix, durée…)."""
+    qn = _norm(question)
+    if any(w in qn for w in ("moins cher", "plus cher", "prix", "tarif", "cout", "coute", "fcfa", "cher")):
+        return "prix"
+    if any(w in qn for w in ("duree", "durees", "temps", "longtemps")) or "combien de temps" in qn:
+        return "duree"
+    if any(w in qn for w in ("horaire", "horaires", "depart", "departs", "heure", "heures")):
+        return "horaires"
+    if any(w in qn for w in ("itineraire", "trajet", "route", "passage")):
+        return "itineraire_detail"
+    return None
+
+
+def _detect_comparison_query(question: str) -> tuple[str, str] | None:
+    """
+    Repère une question comparative et renvoie deux sous-requêtes brutes (X, Y).
+    Ne présume pas que X/Y sont des villes ou des lignes.
+    """
+    q = (question or "").strip()
+    if not q or len(q) < 3:
+        return None
+    # Format raccourci « Touba/Thiès » ou « Touba / Thiès »
+    if q.count("/") == 1 and "://" not in q:
+        raw_left, raw_right = q.split("/", 1)
+        left, right = _clean_comparison_part(raw_left), _clean_comparison_part(raw_right)
+        if len(left) >= 2 and len(right) >= 2 and left != right:
+            return left, right
+    if len(q) < 7:
+        return None
+    for pat in (_RE_COMP_DIFF, _RE_COMP_LEQUEL, _RE_COMP_VS):
+        m = pat.search(q)
+        if m:
+            g = [m.group(i) for i in range(1, pat.groups + 1) if m.group(i)]
+            if len(g) >= 2:
+                left, right = _clean_comparison_part(g[0]), _clean_comparison_part(g[1])
+                if left and right and left != right:
+                    return left, right
+    m_mc = _RE_COMP_MOINS_CHER.search(q)
+    if m_mc:
+        g = [m_mc.group(i) for i in range(1, 3) if m_mc.group(i)]
+        if len(g) >= 2:
+            left, right = _clean_comparison_part(g[0]), _clean_comparison_part(g[1])
+            if left and right and left != right:
+                return left, right
+    if not _COMP_OU_SKIP.search(q):
+        m = _RE_COMP_OU.match(q)
+        if m:
+            left, right = _clean_comparison_part(m.group(1)), _clean_comparison_part(m.group(2))
+            if len(left) >= 2 and len(right) >= 2 and left != right:
+                return left, right
+    return None
+
+
+def _subquery_result_usable(ctx: dict | None) -> bool:
+    if not ctx or not (ctx.get("answer") or "").strip():
+        return False
+    ans = (ctx["answer"] or "").lower()
+    if "je n'ai pas trouv" in ans or "pas répertoriée" in ans or "pas repertoriee" in ans:
+        return False
+    if ctx.get("query_type") == "other":
+        return False
+    return len(ctx["answer"].strip()) >= 15
+
+
+def _resolve_subquery_context(
+    sub_question: str, *, focus: str | None = None, comparison: bool = False
+) -> dict | None:
+    """
+    Cascade isolée pour une moitié de comparaison — même ordre de priorité
+    que ask(), sans comparaison ni historique.
+    """
+    sub = (sub_question or "").strip()
+    if not sub:
+        return None
+    sub_norm = _norm(sub)
+    label = sub
+
+    city_section = (get_section_by_ville(sub) if sub else None) or _detect_city(sub_norm)
+    if city_section:
+        ville_key = _ville_key_from_query(sub_norm, city_section)
+        if focus:
+            aspect = focus
+        elif comparison:
+            aspect = "presence"
+        else:
+            aspect = _resolve_city_aspect(sub_norm, sub, city_section)
+        answer = _format_city_response_prose(city_section, ville_key, aspect=aspect)
+        if answer:
+            return {
+                "label": label,
+                "answer": answer,
+                "source_type": "city_info",
+                "sources": [{
+                    "title": "Réseau Interurbain DDD",
+                    "url": "https://demdikk.sn/reseau-interurbain/",
+                    "score": 1.0,
+                }],
+                "query_type": "city_info",
+            }
+
+    city_payload = _json_interurban_city(sub, sub_norm)
+    if city_payload and city_payload.get("answer"):
+        return {
+            "label": label,
+            "answer": city_payload["answer"],
+            "source_type": "city_info",
+            "sources": city_payload.get("sources", []),
+            "query_type": city_payload.get("query_type"),
+        }
+
+    qtype = detect_query_type(sub)
+    if qtype == "line_X":
+        line_num = _detect_line_number(sub)
+        line_data = _get_line_by_number(line_num) if line_num else None
+        if line_data:
+            ld = dict(line_data)
+            stops = ld.get("stops") or []
+            ans = (
+                f"Ligne {ld['number']} : {ld.get('start', '')} ↔ {ld.get('end', '')}. "
+                f"{len(stops)} arrêts."
+            )
+            return {
+                "label": label,
+                "answer": ans,
+                "source_type": "line_details",
+                "sources": [{"title": "Réseau Urbain DDD",
+                             "url": "https://demdikk.sn/reseau-urbain-dakar/", "score": 1.0}],
+                "query_type": "line_details",
+            }
+
+    svc = _json_service_payload(sub, sub_norm)
+    if svc and svc.get("answer"):
+        return {
+            "label": label,
+            "answer": svc["answer"],
+            "source_type": "service",
+            "sources": svc.get("sources", []),
+            "query_type": "general",
+        }
+
+    try:
+        import sys as _sys
+        _app_mod = _sys.modules.get("app")
+        _faq_fn = getattr(_app_mod, "_search_chatbot_page_blocks", None) if _app_mod else None
+        if _faq_fn:
+            fb = _faq_fn(sub)
+            if fb and fb.get("answer"):
+                return {
+                    "label": label,
+                    "answer": fb["answer"],
+                    "source_type": "faq",
+                    "sources": fb.get("sources", []),
+                    "query_type": "general",
+                }
+    except Exception:
+        pass
+
+    results = _search(sub, top_k=3)
+    if results and results[0].get("score", 0) >= 0.30:
+        top = results[0]
+        return {
+            "label": label,
+            "answer": top["content"][:700],
+            "source_type": "rag",
+            "sources": [{"title": top.get("title") or "Dakar Dem Dikk",
+                         "url": top.get("url") or "https://demdikk.sn",
+                         "score": top.get("score", 0)}],
+            "query_type": "general",
+        }
+    return None
+
+
+def _json_comparison_payload(question: str, left: str, right: str) -> dict | None:
+    """Construit le payload comparison — None si aucune moitié exploitable."""
+    focus = _comparison_focus_from_question(question)
+    left_ctx = _resolve_subquery_context(left, focus=focus, comparison=True)
+    right_ctx = _resolve_subquery_context(right, focus=focus, comparison=True)
+    left_ok = _subquery_result_usable(left_ctx)
+    right_ok = _subquery_result_usable(right_ctx)
+
+    if not left_ok and not right_ok:
+        return None
+
+    sources: list[dict] = []
+    for ctx in (left_ctx, right_ctx):
+        if ctx and ctx.get("sources"):
+            sources.extend(ctx["sources"])
+
+    if left_ok and right_ok:
+        return {
+            "answer": "",
+            "summary": f"Comparaison : {left} / {right}",
+            "sources": sources[:4],
+            "results": [],
+            "query_type": "comparison",
+            "comparison_mode": "both",
+            "comparison_left": left_ctx,
+            "comparison_right": right_ctx,
+            "comparison_question": question,
+            "has_structured_data": False,
+            "is_city_query": False,
+            "is_line_query": False,
+            "needs_clarification": False,
+            "show_more_info": True,
+        }
+
+    found = left_ctx if left_ok else right_ctx
+    missing = right if left_ok else left
+    return {
+        "answer": (
+            f"{found['answer']}\n\n"
+            f"Par contre, je n'ai pas d'info sur « {missing} »."
+        ),
+        "summary": found["answer"][:200],
+        "sources": found.get("sources", []),
+        "results": [],
+        "query_type": "comparison",
+        "comparison_mode": "partial",
+        "comparison_left": left_ctx,
+        "comparison_right": right_ctx,
+        "comparison_question": question,
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "needs_clarification": False,
+        "show_more_info": True,
+        "llm_enhanced": False,
+    }
 
 
 def _city_query_aspect(qn: str, question: str) -> str:
@@ -1165,6 +1447,12 @@ def _format_city_response_prose(section: dict, ville: str, aspect: str = "full")
 
     if aspect == "clarify":
         return _format_city_clarify_prose(section, ville)
+
+    if aspect == "presence":
+        return (
+            f"Oui, nos bus Dakar Dem Dikk vont bien à {titre_disp} "
+            f"sur le réseau interurbain."
+        )
 
     if aspect == "reservation":
         return _INTERURBAIN_RESERVATION
@@ -2070,7 +2358,7 @@ def ask():
         or ""
     ).strip()
     question_resolved = _enrich_short_question_from_history(question_raw, history_raw)
-    question  = normalize_query_typos(question_resolved.strip())
+    question = normalize_query_typos(_expand_query_acronyms(question_resolved.strip()))
     city_hint = (body.get('city') or '').strip()
 
     if not question:
@@ -2083,6 +2371,13 @@ def ask():
         })
 
     q_norm = _norm(question)
+
+    # Comparaisons X vs Y — avant routes structurées
+    _cmp_parts = _detect_comparison_query(question)
+    if _cmp_parts:
+        _cmp_payload = _json_comparison_payload(question, _cmp_parts[0], _cmp_parts[1])
+        if _cmp_payload:
+            return jsonify(_cmp_payload)
 
     if _is_company_presentation_query(q_norm, question):
         try:

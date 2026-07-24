@@ -643,6 +643,208 @@ _LLM_SYSTEM = (
     "– Utilise des tirets (–) pour les listes, seulement si plusieurs éléments distincts."
 )
 
+_COMPARISON_LLM_SYSTEM = (
+    "Tu es Maï, conseillère Dakar Dem Dikk. Tu réponds au téléphone, en français naturel.\n\n"
+    "RÈGLE ABSOLUE — CONTENU\n"
+    "– Réponds UNIQUEMENT à ce que l'utilisateur demande (prix, durée, horaires…).\n"
+    "– Ne mentionne JAMAIS ce qui manque, ce qui n'est pas indiqué, ou ce que tu ignores.\n"
+    "– Ne dis JAMAIS « bloc », « les deux blocs », « informations fournies », "
+    "« dans mes données », « par conséquent sur la base des seules informations ».\n"
+    "– Si les deux éléments sont identiques sur le point demandé, dis-le simplement "
+    "(ex. « Touba et Kaolack coûtent tous les deux 4 000 FCFA depuis Dakar »).\n"
+    "– Si une différence existe, énonce-la clairement en une ou deux phrases fluides.\n"
+    "– N'ajoute pas horaires, durée ou réservation si la question ne porte que sur le prix.\n"
+    "– N'invente rien : uniquement les faits présents dans les deux textes de référence.\n\n"
+    "STYLE\n"
+    "– Pas de markdown. Pas de listes sèches. Pas de formule de clôture creuse.\n"
+    "– Ton direct et humain, comme une conseillère qui connaît son métier."
+)
+
+_COMPARISON_ANTI_PATTERNS = (
+    re.compile(
+        r"Aucune information[^.!?]*[.!?]\s*",
+        re.I,
+    ),
+    re.compile(
+        r"[^.!?]*\bles deux blocs\b[^.!?]*[.!?]\s*",
+        re.I,
+    ),
+    re.compile(
+        r"Par conséquent,[^.!?]*[.!?]\s*",
+        re.I,
+    ),
+    re.compile(
+        r"[^.!?]*n['\u2019](?:est|a)\s+(?:pas\s+)?(?:fournie|indiqu[ée]|mentionn[ée])[^.!?]*[.!?]\s*",
+        re.I,
+    ),
+    re.compile(
+        r"Les deux blocs[^.!?]*[.!?]\s*",
+        re.I,
+    ),
+    re.compile(
+        r"[^.!?]*informations (?:données|fournies)[^.!?]*[.!?]\s*",
+        re.I,
+    ),
+    re.compile(
+        r"[^.!?]*(?:durée|horaires?|services?)[^.!?]*(?:n['\u2019](?:est|a)\s+(?:pas\s+)?(?:fournie|indiqu[ée])|ne\s+(?:sont|figurent)\s+pas)[^.!?]*[.!?]\s*",
+        re.I,
+    ),
+    re.compile(
+        r"[^.!?]*\b(?:sur la base des seules|dans mes données|dans les données)\b[^.!?]*[.!?]\s*",
+        re.I,
+    ),
+    re.compile(
+        r"[^.!?]*\bdans nos informations officielles\b[^.!?]*[.!?]?\s*",
+        re.I,
+    ),
+    re.compile(
+        r"Par contre, je n'ai pas d'[ée]l[ée]ments comparables[^.!?]*[.!?]\s*",
+        re.I,
+    ),
+)
+
+
+def _format_fcfa(amount: int) -> str:
+    return f"{amount:,}".replace(",", " ")
+
+
+def _extract_fcfa_amount(text: str) -> int | None:
+    m = re.search(r"([\d\s\u202f]+)\s*FCFA", text or "", re.I)
+    if not m:
+        return None
+    try:
+        return int(re.sub(r"[\s\u202f]", "", m.group(1)))
+    except ValueError:
+        return None
+
+
+def _try_deterministic_comparison_answer(data: dict, question: str) -> str | None:
+    """Réponse comparative directe quand les faits sont clairs (sans LLM)."""
+    left = data.get("comparison_left") or {}
+    right = data.get("comparison_right") or {}
+    la = (left.get("answer") or "").strip()
+    ra = (right.get("answer") or "").strip()
+    ll = (left.get("label") or "le premier").strip()
+    rl = (right.get("label") or "le second").strip()
+    if not la or not ra:
+        return None
+
+    focus_fn = getattr(_mod, "_comparison_focus_from_question", None)
+    focus = focus_fn(question) if callable(focus_fn) else None
+    qn = (question or "").lower()
+
+    if focus == "prix" or any(w in qn for w in ("moins cher", "plus cher", "cher")):
+        pl, pr = _extract_fcfa_amount(la), _extract_fcfa_amount(ra)
+        if pl is not None and pr is not None:
+            lp, rp = _format_fcfa(pl), _format_fcfa(pr)
+            if pl == pr:
+                return f"{ll} et {rl} coûtent tous les deux {lp} FCFA depuis Dakar."
+            if pl < pr:
+                return f"C'est {ll} qui est le moins cher ({lp} FCFA), contre {rp} FCFA pour {rl}."
+            return f"C'est {rl} qui est le moins cher ({rp} FCFA), contre {lp} FCFA pour {ll}."
+
+    if focus == "duree":
+        for pat in (
+            r"(environ\s+\d+\s*h(?:\s*\d*\s*min)?(?:\s*de\s+route)?)",
+            r"(\d+\s*h(?:\s*\d*\s*min)?(?:\s*de\s+route)?)",
+        ):
+            ml, mr = re.search(pat, la, re.I), re.search(pat, ra, re.I)
+            if ml and mr:
+                dl, dr = ml.group(1).strip(), mr.group(1).strip()
+                if dl.lower() == dr.lower():
+                    return f"La durée est la même pour {ll} et {rl} : {dl}."
+                return f"Vers {ll} comptez {dl}, et vers {rl} {dr}."
+
+    if focus is None and left.get("source_type") == "city_info" and right.get("source_type") == "city_info":
+        if "réseau interurbain" in la.lower() and "réseau interurbain" in ra.lower():
+            return (
+                f"Oui, nos bus Dakar Dem Dikk desservent {ll} et {rl} "
+                f"sur le réseau interurbain."
+            )
+
+    return None
+
+
+def _strip_comparison_meta(text: str) -> str:
+    """Retire les tournures meta (« les deux blocs », « aucune information… »)."""
+    out = (text or "").strip()
+    if not out:
+        return out
+    for pat in _COMPARISON_ANTI_PATTERNS:
+        out = pat.sub("", out)
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"\s+([,.!?])", r"\1", out)
+    return out.strip()
+
+
+def _enhance_comparison_with_deepseek(data: dict, question: str) -> dict:
+    """Fusion comparative via DeepSeek (query_type comparison, mode both)."""
+    deterministic = _try_deterministic_comparison_answer(data, question)
+    if deterministic:
+        out = dict(data)
+        out["answer"] = deterministic
+        out["llm_enhanced"] = False
+        return out
+
+    left = data.get("comparison_left") or {}
+    right = data.get("comparison_right") or {}
+    left_label = left.get("label", "premier élément")
+    right_label = right.get("label", "second élément")
+    user_prompt = (
+        f"Question : {question}\n\n"
+        f"Référence — {left_label} :\n{left.get('answer', '')}\n\n"
+        f"Référence — {right_label} :\n{right.get('answer', '')}\n\n"
+        "Rédige la réponse à l'utilisateur en une ou deux phrases naturelles. "
+        "Compare seulement ce qui est demandé."
+    )
+    cfg = _init_deepseek()
+    if cfg is None:
+        out = dict(data)
+        out["answer"] = f"{left.get('answer', '')}\n\n{right.get('answer', '')}"
+        out["llm_enhanced"] = False
+        return out
+    try:
+        import requests as _requests
+        r = _requests.post(
+            f"{cfg['base_url']}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {cfg['api_key']}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": cfg["model"],
+                "messages": [
+                    {"role": "system", "content": _COMPARISON_LLM_SYSTEM},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.25,
+                "max_tokens": 900,
+            },
+            timeout=cfg["timeout_s"],
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        payload = r.json() or {}
+        choices = payload.get("choices") or []
+        text = ""
+        if choices:
+            text = ((choices[0] or {}).get("message") or {}).get("content") or ""
+        text = text.strip()
+        if text and len(text) >= 20:
+            out = dict(data)
+            out["answer"] = _strip_comparison_meta(_strip_llm_hedging(text))
+            out["llm_enhanced"] = True
+            out["llm_provider"] = "deepseek"
+            out["gemini_enhanced"] = True
+            return out
+    except Exception:
+        pass
+    out = dict(data)
+    out["answer"] = f"{left.get('answer', '')}\n\n{right.get('answer', '')}"
+    out["llm_enhanced"] = False
+    return out
+
+
 def _init_deepseek():
     """Initialise la config DeepSeek (une seule fois)."""
     global _deepseek_cfg
@@ -2412,6 +2614,11 @@ if _original_ask:
                 question = fixed_q
                 qn = fixed_qn
 
+        _expand_acr = getattr(_mod, "_expand_query_acronyms", None)
+        if callable(_expand_acr):
+            question = _expand_acr(question)
+            qn = _norm(question)
+
         def _reply(data, enhance=True):
             payload = _enhance_if_safe(data, question, client_history) if enhance else data
             return jsonify(payload)
@@ -2459,6 +2666,13 @@ if _original_ask:
                 # Réponse tuple (response, status_code)
                 resp_obj, *rest = original_response if isinstance(original_response, tuple) else (original_response,)
                 data = resp_obj.get_json(force=True) or {}
+
+            # Comparaison X vs Y — DeepSeek dédié (pas enhance générique)
+            if data.get("query_type") == "comparison":
+                if data.get("comparison_mode") == "both":
+                    cmp_final = _enhance_comparison_with_deepseek(data, question)
+                    return (jsonify(cmp_final), *rest) if rest else jsonify(cmp_final)
+                return (jsonify(data), *rest) if rest else jsonify(data)
 
             # Interurbain structuré : ne pas écraser par fallback site / LLM
             if data.get("query_type") in ("city_info", "interurban_overview"):

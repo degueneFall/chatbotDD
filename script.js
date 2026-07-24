@@ -892,11 +892,49 @@ window.onload = function() {
         <p style="font-size: 1.05em; line-height: 1.7;"> Je suis Maï, l'assistante de Dakar Dem Dikk 😊 Pose-moi tes questions sur le transport, les horaires ou les voyages.</p>
          </div>
       <p style="margin-top: 1.5rem; font-size: 1.1em;"><strong style="color: var(--bot);">Comment puis-je vous aider aujourd'hui ?</strong></p>
-    `)
+    `, { noCopy: true })
   }, 300)
 }
 
-function append(role, html){
+function htmlToPlainText(html) {
+  const tmp = document.createElement('div')
+  tmp.innerHTML = html || ''
+  return (tmp.textContent || tmp.innerText || '').trim()
+}
+
+function buildCopyFabInline(plainText, action = 'copy-msg') {
+  const encoded = encodeURIComponent(plainText || '')
+  return `<button type="button" class="copy-fab copy-fab--inline" data-action="${action}" data-copy="${encoded}" title="Copier" aria-label="Copier">${COPY_FAB_SVG}</button>`
+}
+
+function attachMessageCopyButton(wrapper, bubble, plainText, action = 'copy-msg') {
+  if (!bubble || !plainText) return
+  bubble.classList.add('bubble--copyable')
+  if (!bubble.querySelector('.copy-fab--inline')) {
+    bubble.insertAdjacentHTML('beforeend', buildCopyFabInline(plainText, action))
+  }
+  bindCopyFab(wrapper || bubble.closest('.user, .bot') || bubble)
+}
+
+function bindCopyFab(container) {
+  if (!container) return
+  container.querySelectorAll('button[data-action="copy-msg"], button[data-action="copy"]').forEach((copyBtn) => {
+    if (copyBtn.dataset.copyBound === '1') return
+    copyBtn.dataset.copyBound = '1'
+    copyBtn.addEventListener('click', () => {
+      const fromData = decodeURIComponent(copyBtn.dataset.copy || '')
+      const bubble = copyBtn.closest('.bubble') || container.querySelector('.bubble')
+      const fromDom = htmlToPlainText(
+        bubble?.querySelector('.msg-content, .answer-content, .bot-reply-block')?.innerHTML
+        || bubble?.innerHTML
+        || ''
+      )
+      robustCopy(fromData || fromDom, copyBtn)
+    })
+  })
+}
+
+function append(role, html, opts = {}){
   const wrapper = document.createElement('div')
   wrapper.className = role + ' clearfix'
   wrapper.style.opacity = '0'
@@ -904,8 +942,19 @@ function append(role, html){
   
   const b = document.createElement('div')
   b.className = 'bubble'
-  b.innerHTML = html
-  wrapper.appendChild(b)
+  const isLoading = /class=["']loading["']/.test(html || '')
+  const hasCopyFab = (html || '').includes('copy-fab')
+  const skipCopy = opts.noCopy === true
+  if (!isLoading && !hasCopyFab && !skipCopy) {
+    const plain = htmlToPlainText(html)
+    b.innerHTML = plain ? `<div class="msg-content">${html}</div>` : html
+    wrapper.appendChild(b)
+    if (plain) attachMessageCopyButton(wrapper, b, plain)
+  } else {
+    b.innerHTML = html
+    wrapper.appendChild(b)
+    bindCopyFab(wrapper)
+  }
   chat.appendChild(wrapper)
   
   // Animation d'apparition
@@ -1016,6 +1065,7 @@ function expandShortQuery(q) {
   const afQ = "Afrique Dem Dikk : destinations (ex: Gambie/Banjul), horaires, points de départ, réservation et tarifs"
   if (normFixed === 'senegal' || normFixed === 'gambie' || normFixed === 'gambia') return afQ
   const sddQ = 'Réseau Sénégal Dem Dikk (interurbain) : horaires, points de départ et réservation'
+  if (normFixed === 'sdd') return sddQ
   if (normFixed === 'senegal dem dikk' || normFixed.includes('senegal dem dikk')) return sddQ
 
   const words = normFixed.split(' ').filter(Boolean)
@@ -1427,6 +1477,22 @@ form.addEventListener('submit', async (e)=>{
         }
       }
     }
+    // Réponses comparatives (X vs Y, lequel est moins cher, Touba/Thiès…)
+    else if (json.query_type === 'comparison') {
+      const cleanAnswer = stripNavContent(json.answer || json.summary || '')
+      let html = `<div class="bot-reply-block">
+        <div class="answer-content answer-plain">${formatResponseText(cleanAnswer)}</div>`
+      if (shouldShowMoreInfoLink(json)) {
+        html += formatMoreInfoMeta(json)
+      }
+      html += `</div>`
+      const bubble = placeholder.querySelector('.bubble')
+      bubble.innerHTML = html
+      attachMessageCopyButton(placeholder, bubble, cleanAnswer, 'copy')
+      chat.scrollTop = chat.scrollHeight
+      pushConversationExchange(qExpanded, json)
+      return
+    }
     // SINON, UTILISER L'ANCIENNE LOGIQUE
     else if(json && (json.summary || (json.results && json.results.length))){
       const result = json.results[0] || {}
@@ -1459,6 +1525,7 @@ form.addEventListener('submit', async (e)=>{
         answerHasStructuredBlockMarkers(cleanAnswer)
       const useProseAnswer =
         json.query_type === 'city_info' ||
+        json.query_type === 'comparison' ||
         (!isCityQuery && !isLineQuery && !hasIndexedSnippet && !structuredInAnswer)
 
       // Formater la réponse
@@ -1495,16 +1562,14 @@ form.addEventListener('submit', async (e)=>{
         responseHtml += formatMoreInfoMeta(json)
       }
       
-      const encodedFull = encodeURIComponent(cleanAnswer)
-      const copyFabBtn =
-        `<div class="copy-fab-row"><button type="button" class="copy-fab" data-action="copy" data-copy="${encodedFull}" title="Copier" aria-label="Copier">${COPY_FAB_SVG}</button></div>`
       responseHtml =
         '<div class="bot-reply-block">' +
         responseHtml +
-        copyFabBtn +
         '</div>'
       
-      placeholder.querySelector('.bubble').innerHTML = responseHtml
+      const bubble = placeholder.querySelector('.bubble')
+      bubble.innerHTML = responseHtml
+      attachMessageCopyButton(placeholder, bubble, cleanAnswer, 'copy')
 
       // « voir plus » : développer la réponse dans la bulle
       const expandBtn = placeholder.querySelector('button[data-action="show-full-content"]')
@@ -1520,8 +1585,8 @@ form.addEventListener('submit', async (e)=>{
         })
       }
       
-      // Gestionnaire pour le bouton "Copier"
-      const copyBtn = placeholder.querySelector('button[data-action="copy"]')
+      // Gestionnaire pour le bouton "Copier" (cartes lignes structurées)
+      const copyBtn = placeholder.querySelector('button[data-action="copy"]:not(.copy-fab--inline)')
       if (copyBtn) {
         copyBtn.addEventListener('click', () => {
           const textToCopy = decodeURIComponent(copyBtn.dataset.copy || '') || cleanAnswer
@@ -1652,7 +1717,7 @@ function formatAllLinesSummary(json) {
         return true;
     });
 
-    let html = `<div style="margin:4px 0"><strong style="color:var(--bot,#0d9488)">🚍 Réseau Dakar Dem Dikk — ${uniqueLines.length} lignes</strong></div>`;
+    let html = `<div style="margin:4px 0"><strong style="color:var(--bot,#0d9488)">🚍 Réseau Dakar Dem Dikk — ${uniqueLines.length} ligne${uniqueLines.length > 1 ? 's' : ''}</strong></div>`;
     html += `<ul style="list-style:none;padding:0;margin:8px 0 0;display:flex;flex-direction:column;gap:3px">`;
 
     uniqueLines.forEach(line => {
@@ -1901,6 +1966,15 @@ function formatStructuredText(text, city) {
     
     return html;
 }
+function isStructuredLineListing(text) {
+    const rows = (text || '').split('\n').map((l) => l.trim()).filter(Boolean)
+    if (!rows.length) return false
+    const structured = rows.filter((l) =>
+        /^(?:[-–•]\s*)?(?:LIGNE|Ligne)\s+\d+[A-Z&]*/i.test(l)
+    )
+    return structured.length >= 2 || (structured.length === 1 && rows.length === 1)
+}
+
 function formatBusLines(text, city = '') {
     if (!text) return '';
 
@@ -1911,13 +1985,13 @@ function formatBusLines(text, city = '') {
 
     // Extraire chaque ligne sous la forme "LIGNE X : Terminus A <-> Terminus B"
     const lines = extractAllLines(text);
-    if (!lines.length) {
+    if (!lines.length || !isStructuredLineListing(text)) {
         return `<div class="preview">${text.replace(/\n/g, '<br>')}</div>`;
     }
 
     const title = city
         ? `Lignes de transport — ${city.toUpperCase()}`
-        : `Réseau Dakar Dem Dikk — ${lines.length} lignes`;
+        : `Réseau Dakar Dem Dikk — ${lines.length} ligne${lines.length > 1 ? 's' : ''}`;
 
     let html = `<div style="margin:4px 0"><strong style="color:var(--bot,#0d9488)">${title}</strong></div>`;
     html += `<ul style="list-style:none;padding:0;margin:8px 0 0;display:flex;flex-direction:column;gap:4px">`;

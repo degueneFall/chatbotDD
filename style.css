@@ -225,6 +225,45 @@ body::before {
   pointer-events: none;
 }
 
+/* Copier discret — coin bas-droit dans la bulle */
+.copy-fab--inline {
+  position: absolute;
+  bottom: 5px;
+  right: 6px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  box-shadow: none;
+  color: #9ca3af;
+  transition: color 0.15s, background 0.15s;
+  z-index: 2;
+}
+.copy-fab--inline .copy-fab__svg {
+  width: 13px;
+  height: 13px;
+}
+.copy-fab--inline:hover {
+  color: #6b7280;
+  background: rgba(107, 114, 128, 0.08);
+}
+.copy-fab--inline:focus-visible {
+  outline: 2px solid rgba(156, 163, 175, 0.45);
+  outline-offset: 1px;
+}
+.copy-fab--inline.copy-fab--ok {
+  color: #6b7280;
+}
+.user .copy-fab--inline {
+  color: rgba(255, 255, 255, 0.62);
+}
+.user .copy-fab--inline:hover {
+  color: rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.1);
+}
+
 /* « Plus de détails » après clic : état discret */
 .small-btn.small-btn--state-done {
   opacity: 0.85;
@@ -260,14 +299,48 @@ body::before {
   text-align: center;
   border: 2px solid var(--list-border);
 }
+.bubble .bot-reply-block .meta.meta-more-info {
+  position: absolute;
+  bottom: 6px;
+  left: 14px;
+  margin: 0;
+  padding: 3px 8px;
+  background: linear-gradient(135deg, #f0faf8, #e6f5f2);
+  border: 1px solid var(--list-border);
+  border-radius: 6px;
+  text-align: left;
+  font-size: 0.72em;
+  font-weight: 500;
+  line-height: 1.3;
+  width: auto;
+  max-width: calc(100% - 52px);
+  z-index: 2;
+}
+.bubble:has(.bot-reply-block .meta-more-info) {
+  padding-bottom: 28px;
+}
 .meta-more-info .more-info-link {
   color: var(--bot);
   font-weight: 600;
+  font-size: inherit;
   text-decoration: none;
 }
 .meta-more-info .more-info-link:hover {
   text-decoration: underline;
   color: #0d9488;
+}
+.line-details-container .meta.meta-more-info,
+.line-details-container ~ .meta.meta-more-info {
+  position: static;
+  display: inline-block;
+  margin-top: 8px;
+  padding: 3px 8px;
+  text-align: left;
+  font-size: 0.72em;
+  line-height: 1.3;
+  background: linear-gradient(135deg, #f0faf8, #e6f5f2);
+  border: 1px solid var(--list-border);
+  border-radius: 6px;
 }
 
 /* « voir plus » inline après troncature (… voir plus) */
