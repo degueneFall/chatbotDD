@@ -179,6 +179,24 @@ _ACRONYM_DEFINITIONS = (
         "Dakar Dem Dikk",
         "l'opérateur public de transport en commun au Sénégal (urbain, interurbain, AIBD, international).",
     ),
+    (
+        ("cco", "centre de controle", "centre de contrôle", "tour de controle", "tour de contrôle"),
+        "CCO",
+        "Centre de Contrôle des Opérations",
+        "la « tour de contrôle » de l'entreprise (suivi de flotte, incidents, assistance conducteurs).",
+    ),
+    (
+        ("tek dem", "tekdem", "tek-dem"),
+        "Tek Dem",
+        "carte pass rechargeable",
+        "le titre de transport DDD (carte/pass) pour payer et valider les trajets à bord.",
+    ),
+    (
+        ("aibd", "blaise diagne", "aeroport blaise diagne"),
+        "AIBD",
+        "Aéroport International Blaise Diagne",
+        "l'aéroport de référence desservi par la navette express Dakar Dem Dikk (Dakar–AIBD).",
+    ),
 )
 
 
@@ -188,9 +206,10 @@ def _match_acronym_definition_entry(q_norm: str) -> tuple[str, str, str] | None:
         return None
     for keys, sigle, name, role in _ACRONYM_DEFINITIONS:
         for k in keys:
-            if k in qn:
-                return sigle, name, role
-            if len(k) <= 4 and re.search(rf"(?<!\w){re.escape(k)}(?!\w)", qn):
+            if len(k) <= 5:
+                if re.search(rf"(?<!\w){re.escape(k)}(?!\w)", qn):
+                    return sigle, name, role
+            elif k in qn:
                 return sigle, name, role
     return None
 
@@ -216,6 +235,10 @@ def _json_acronym_definition(question: str, q_norm: str) -> dict | None:
         more_url = "https://demdikk.sn/reseau-interurbain/"
     elif sigle == "ADD":
         more_url = "https://demdikk.sn/reseau-international/"
+    elif sigle == "CCO":
+        more_url = "https://demdikk.sn/chatbot-2303/"
+    elif sigle in ("Tek Dem", "AIBD"):
+        more_url = "https://demdikk.sn/chatbot-2303/"
     return {
         "answer": answer,
         "summary": f"{sigle} — {name}",
@@ -497,6 +520,478 @@ def _interurban_overview_faq_helpers() -> tuple:
         )
     except Exception:
         return None, None, None
+
+
+# Infra FAQ/RAG partagée par les triggers à contenu fixe (hors interurban_overview).
+_TRIGGER_FAQ_MIN_SCORE = 0.5
+_TRIGGER_RAG_MIN_SCORE = 0.30
+
+
+def _debug_fixed_trigger(name: str, message: str) -> None:
+    if os.environ.get("FLASK_DEBUG", "1") == "1":
+        print(f"[{name}] {message}")
+
+
+def _trigger_rag_content_usable(content: str) -> bool:
+    c = (content or "").strip()
+    if len(c) < 60:
+        return False
+    cl = c.lower()
+    if any(j in cl for j in ("agent-ia", "guide complet des services", "je n'ai pas trouv")):
+        return False
+    return True
+
+
+def _try_faq_then_rag(question: str, q_norm: str) -> tuple[dict | None, str]:
+    """FAQ chatbot-2303 puis RAG — seuils identiques à interurban_overview."""
+    search_faq, faq_score_fn, faq_usable_fn = _interurban_overview_faq_helpers()
+    if callable(search_faq):
+        try:
+            fb = search_faq(question)
+            faq_score = faq_score_fn(fb) if callable(faq_score_fn) else 0.0
+            faq_ok = callable(faq_usable_fn) and faq_usable_fn(fb, question, q_norm)
+            if fb and faq_score >= _TRIGGER_FAQ_MIN_SCORE and faq_ok:
+                out = dict(fb)
+                out.setdefault("query_type", "general")
+                out.setdefault("show_more_info", True)
+                return out, f"faq score={faq_score:.2f}"
+        except Exception as exc:
+            return None, f"faq_error={exc!r}"
+    try:
+        for hit in (_search(question, top_k=8) or []):
+            content = (hit.get("content") or "").strip()
+            if not _trigger_rag_content_usable(content):
+                continue
+            score = float(hit.get("score") or 0)
+            if score >= _TRIGGER_RAG_MIN_SCORE:
+                out = _payload_from_rag_hit(hit)
+                out.setdefault("query_type", "general")
+                out.setdefault("show_more_info", True)
+                return out, f"rag score={score:.2f} title={(hit.get('title') or '')[:50]!r}"
+    except Exception as exc:
+        return None, f"rag_error={exc!r}"
+    return None, "no_hit"
+
+
+# ── TRIGGER 1 : AIBD / navette ──
+# Bloc wrapper : app.py ~2739-2744 (_aibd_triggers → _fallback_from_site forcé)
+_AIBD_TRIGGERS = ("aibd", "aeroport", "navette", "blaise diagne", "blaise-diagne")
+_AIBD_INTENT_MARKERS = (
+    "horaire", "heure", "depart", "frequence", "tarif", "prix", "billet",
+    "reservation", "reserver", "duree", "combien", "comment", "ou ",
+    "quand", "terminal", "arret", "retard", "contact", "telephone",
+)
+
+
+def _aibd_has_specific_intent(qn: str) -> bool:
+    return any(m in (qn or "") for m in _AIBD_INTENT_MARKERS)
+
+
+def _aibd_price_intent(qn: str) -> bool:
+    return any(m in (qn or "") for m in ("combien", "tarif", "prix", "coute", "cout", "coûte", "coût"))
+
+
+def _aibd_horaire_intent(qn: str) -> bool:
+    return any(m in (qn or "") for m in ("horaire", "heure", "depart", "frequence", "quand"))
+
+
+def _aibd_answer_satisfies_intent(q_norm: str, answer: str) -> bool:
+    an = _norm(answer)
+    if not an:
+        return False
+    if _aibd_price_intent(q_norm):
+        has_price = any(w in an for w in ("fcfa", "000", "cfa", "franc"))
+        if not has_price:
+            return False
+        if "6000" in an or "6 000" in (answer or ""):
+            return True
+        if "navette" in an and has_price:
+            return True
+        return "aibd" in an and has_price
+    if _aibd_horaire_intent(q_norm):
+        return (
+            any(w in an for w in ("horaire", "heure", "depart", "premier", "dernier"))
+            or bool(re.search(r"\d{1,2}h\d{0,2}", an))
+        )
+    if any(m in q_norm for m in ("contact", "telephone")):
+        return "+221" in answer or "221" in an
+    return len(an) >= 40
+
+
+def _aibd_rag_hit_usable(q_norm: str, hit: dict) -> bool:
+    content = (hit.get("content") or "").strip()
+    if not _trigger_rag_content_usable(content):
+        return False
+    cn = _norm(content)
+    if "afrique dem dikk" in cn and not any(w in cn for w in ("navette", "aibd", "aeroport", "6000")):
+        return False
+    return _aibd_answer_satisfies_intent(q_norm, content)
+
+
+def _aibd_specific_search_queries(question: str, q_norm: str) -> list[str]:
+    queries = [question]
+    if _aibd_price_intent(q_norm):
+        queries.extend([
+            "tarif navette AIBD Blaise Diagne 6000 FCFA",
+            "Navette Aéroportuaire Express tarif aller simple",
+        ])
+    elif _aibd_horaire_intent(q_norm):
+        queries.extend([
+            "horaires navette AIBD départ Dakar aéroport",
+            "Premier départ navette Express AIBD",
+        ])
+    seen: set[str] = set()
+    out: list[str] = []
+    for q in queries:
+        key = _norm(q)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(q)
+    return out
+
+
+_AIBD_TARIF_CURATED = (
+    "Navette Aéroportuaire Express (AIBD Dem Dikk) : le tarif unique pour la liaison entre Dakar "
+    "et l'Aéroport International Blaise Diagne (AIBD) est fixé à 6 000 FCFA l'aller simple. "
+    "Une franchise bagages est incluse (supplément par kilo excédentaire). "
+    "Réservation et infos : application Dem Dikk, booking.demdikk.sn ou +221 33 824 10 10."
+)
+
+
+def _try_aibd_specific_answer(question: str, q_norm: str) -> tuple[dict | None, str]:
+    search_faq, faq_score_fn, faq_usable_fn = _interurban_overview_faq_helpers()
+    if callable(search_faq):
+        for q in _aibd_specific_search_queries(question, q_norm):
+            try:
+                fb = search_faq(q)
+                faq_score = faq_score_fn(fb) if callable(faq_score_fn) else 0.0
+                if not fb or faq_score < _TRIGGER_FAQ_MIN_SCORE:
+                    continue
+                ans = fb.get("answer") or ""
+                if not _aibd_answer_satisfies_intent(q_norm, ans):
+                    continue
+                out = dict(fb)
+                out.setdefault("query_type", "general")
+                out.setdefault("show_more_info", True)
+                return out, f"faq score={faq_score:.2f}"
+            except Exception:
+                continue
+        if _aibd_price_intent(q_norm):
+            try:
+                import sys as _sys
+                app_mod = _sys.modules.get("app")
+                fetch = getattr(app_mod, "_fetch_page_text", None) if app_mod else None
+                extract = getattr(app_mod, "_extract_section_priority", None) if app_mod else None
+                make = getattr(app_mod, "_make_chatbot_result", None) if app_mod else None
+                if callable(fetch) and callable(extract) and callable(make):
+                    page = fetch("https://demdikk.sn/chatbot-2303/")
+                    section = extract(
+                        page or "",
+                        (
+                            "Navette Aéroportuaire Express",
+                            "Navette Aeroportuaire Express",
+                            "AIBD Dem Dikk",
+                            "6000 FCFA",
+                        ),
+                        max_chars=900,
+                    )
+                    if section and _aibd_answer_satisfies_intent(q_norm, section):
+                        if _aibd_price_intent(q_norm):
+                            flat = re.sub(r"\s+", " ", section)
+                            m = re.search(
+                                r"tarif unique pour la liaison[^.]*(?:6000|6\s*000)\s*FCFA[^.]*",
+                                flat,
+                                re.I,
+                            )
+                            if m:
+                                section = m.group(0).strip().rstrip(".") + "."
+                            else:
+                                section = _AIBD_TARIF_CURATED
+                        out = make(section)
+                        out.setdefault("query_type", "general")
+                        out.setdefault("show_more_info", True)
+                        return out, "faq_extract_tarif"
+            except Exception:
+                pass
+    try:
+        best: dict | None = None
+        best_score = -1.0
+        seen: set[str] = set()
+        for q in _aibd_specific_search_queries(question, q_norm):
+            for hit in (_search(q, top_k=8) or []):
+                content = (hit.get("content") or "").strip()
+                key = _norm(content)[:240]
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                if not _aibd_rag_hit_usable(q_norm, hit):
+                    continue
+                score = float(hit.get("score") or 0)
+                if score > best_score:
+                    best_score = score
+                    best = hit
+        if best and best_score >= _TRIGGER_RAG_MIN_SCORE:
+            out = _payload_from_rag_hit(best)
+            out.setdefault("query_type", "general")
+            out.setdefault("show_more_info", True)
+            return out, f"rag score={best_score:.2f} title={(best.get('title') or '')[:50]!r}"
+    except Exception as exc:
+        return None, f"rag_error={exc!r}"
+    if _aibd_price_intent(q_norm):
+        out = _payload_from_curated_interurban(_AIBD_TARIF_CURATED)
+        out["sources"] = [{
+            "title": "Navette Express AIBD",
+            "url": "https://demdikk.sn/chatbot-2303/",
+            "score": 1.0,
+        }]
+        return out, "curated_tarif"
+    return None, "no_hit"
+
+
+# ── TRIGGER 2 : Colis / messagerie ──
+# Blocs : app_backup ~2353-2395 (_try_ddd_service_fallback, _json_service_payload)
+#         app_backup ~3025-3040 (early return services)
+#         app.py ~2802-2806 (wrapper colis)
+_COLIS_TRIGGERS = ("colis", "messagerie", "courrier", "expedier", "expedition")
+_COLIS_INTENT_MARKERS = (
+    "tarif", "prix", "combien", "delai", "duree", "poids", "dimension",
+    "maximum", "suivi", "suivre", "tracking", "envoyer", "expedier", "comment",
+    "ou ", "agence", "adresse", "horaire", "assurance", "interdit",
+    "autorise", "fragile", "international",
+)
+
+
+def _is_colis_service_query(qn: str) -> bool:
+    return any(t in (qn or "") for t in _COLIS_TRIGGERS)
+
+
+def _colis_has_specific_intent(qn: str) -> bool:
+    return any(m in (qn or "") for m in _COLIS_INTENT_MARKERS)
+
+
+def _colis_clip_answer_for_intent(q_norm: str, answer: str) -> str:
+    """Évite de coller la section tarification à une question suivi/délai."""
+    text = (answer or "").strip()
+    if not text:
+        return text
+    if any(m in q_norm for m in ("suivi", "suivre", "tracking")):
+        for marker in ("\n\nTarification", "\nTarification", "\n\nLes tarifs", "\n\nNos tarifs"):
+            idx = text.find(marker)
+            if idx > 0:
+                return text[:idx].strip()
+    if any(m in q_norm for m in ("poids", "dimension", "maximum")):
+        for marker in ("\n\nPour suivre", "\nPour suivre", "\n\nSuivi"):
+            idx = text.find(marker)
+            if idx > 0:
+                return text[:idx].strip()
+    return text
+
+
+def _try_colis_specific_answer(question: str, q_norm: str) -> tuple[dict | None, str]:
+    specific, reason = _try_faq_then_rag(question, q_norm)
+    if not specific:
+        return specific, reason
+    clipped = _colis_clip_answer_for_intent(q_norm, specific.get("answer") or "")
+    if clipped != (specific.get("answer") or ""):
+        specific = dict(specific)
+        specific["answer"] = clipped
+        specific["summary"] = clipped[:200]
+        reason = f"{reason}+clipped"
+    return specific, reason
+
+
+# ── TRIGGER 3 : Tek Dem ──
+# Blocs : app.py ~2900-2903 (_site_triggers tek dem / carte / pass / rechargement)
+#         app.py ~2917+ (fallback _fallback_from_site générique)
+_TEK_DEM_CORE_TRIGGERS = ("tek dem", "tekdem")
+_TEK_DEM_RECHARGE_TRIGGERS = ("rechargement", "recharger", "recharge", "rechargez")
+_TEK_DEM_INTENT_MARKERS = (
+    "recharg", "recharge", "solde", "comment", "ou ", "agence", "point de vente",
+    "prix", "tarif", "combien", "obtenir", "acheter", "souscrire", "enfant",
+    "duplicata", "opposition", "bloquer", "perdu", "perdue", "volee", "vole",
+    "bug", "erreur", "fonctionne", "marche pas", "compte", "validite",
+    "abonnement", "etudiant", "adulte", "fonctionnaire", "jeune actif",
+)
+
+
+def _matches_tek_dem_trigger(qn: str) -> str | None:
+    qn = (qn or "").strip()
+    if not qn:
+        return None
+    for t in _TEK_DEM_CORE_TRIGGERS:
+        if t in qn:
+            return t
+    if any(t in qn for t in _TEK_DEM_RECHARGE_TRIGGERS):
+        if any(w in qn for w in ("tek", "carte", "pass", "dem dikk", "ddd")):
+            return "rechargement tek"
+    if "carte" in qn and any(
+        w in qn for w in ("tek", "perdu", "perdue", "volee", "vole", "duplicata", "opposition", "recharg")
+    ):
+        return "carte tek"
+    if qn in ("carte", "pass", "ma carte", "mon pass"):
+        return "carte/pass"
+    return None
+
+
+def _tek_dem_has_specific_intent(qn: str) -> bool:
+    return any(m in (qn or "") for m in _TEK_DEM_INTENT_MARKERS)
+
+
+def _tek_dem_specific_search_queries(question: str, q_norm: str) -> list[str]:
+    queries = [question]
+    if any(m in q_norm for m in ("recharg", "recharge", "solde")):
+        queries.extend([
+            "recharger carte Tek Dem solde agence",
+            "rechargement pass Tek Dem",
+        ])
+    if any(m in q_norm for m in ("prix", "tarif", "combien", "abonnement")):
+        queries.extend([
+            "abonnement Tek Dem tarif étudiant adulte FCFA",
+            "frais carte Tek Dem 1000 FCFA",
+        ])
+    if any(m in q_norm for m in ("perdu", "perdue", "volee", "vole", "duplicata", "opposition")):
+        queries.extend([
+            "carte Tek Dem perdue opposition duplicata",
+            "carte volée Tek Dem que faire",
+        ])
+    if any(m in q_norm for m in ("obtenir", "acheter", "souscrire", "comment", "ou ")):
+        queries.append("obtenir carte Tek Dem points de souscription agence")
+    seen: set[str] = set()
+    out: list[str] = []
+    for q in queries:
+        key = _norm(q)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(q)
+    return out
+
+
+def _tek_dem_answer_satisfies_intent(q_norm: str, answer: str) -> bool:
+    an = _norm(answer)
+    if not an:
+        return False
+    if any(m in q_norm for m in ("perdu", "perdue", "volee", "vole", "duplicata", "opposition")):
+        return any(w in an for w in ("perdu", "vole", "duplicata", "opposition", "bloquer", "service client"))
+    if not any(w in an for w in ("tek dem", "tekdem", "carte", "pass", "recharg", "abonnement")):
+        return False
+    if any(m in q_norm for m in ("recharg", "recharge", "solde")):
+        return any(w in an for w in ("recharg", "solde", "agence", "point de vente"))
+    if any(m in q_norm for m in ("prix", "tarif", "combien", "abonnement")):
+        return any(w in an for w in ("fcfa", "tarif", "prix", "000", "abonnement"))
+    return len(an) >= 40
+
+
+def _tek_dem_rag_hit_usable(q_norm: str, hit: dict) -> bool:
+    content = (hit.get("content") or "").strip()
+    if not _trigger_rag_content_usable(content):
+        return False
+    return _tek_dem_answer_satisfies_intent(q_norm, content)
+
+
+_TEK_DEM_PRESENTATION = (
+    "Tek Dem est la carte pass rechargeable de Dakar Dem Dikk pour payer et valider "
+    "vos trajets à bord (déploiement progressif de la validation). "
+    "Abonnements mensuels : étudiant 10 000 FCFA, adulte 15 000 FCFA, etc. "
+    "Frais de carte : 1 000 FCFA pour un nouveau pass. Recharge et souscription en agence DDD."
+)
+
+
+def _tek_dem_fixe_payload(fb: dict | None) -> dict | None:
+    """Contenu fixe Tek Dem — synthèse si l'extrait FAQ est trop court ou mal découpé."""
+    if not fb:
+        return None
+    ans = (fb.get("answer") or "").strip()
+    if len(ans) < 80 or ans.startswith(":"):
+        return {
+            **fb,
+            "answer": _TEK_DEM_PRESENTATION,
+            "summary": "Tek Dem — carte pass DDD",
+        }
+    return fb
+
+
+def _try_tek_dem_specific_answer(question: str, q_norm: str) -> tuple[dict | None, str]:
+    search_faq, faq_score_fn, faq_usable_fn = _interurban_overview_faq_helpers()
+    try:
+        import sys as _sys
+        app_mod = _sys.modules.get("app")
+        fetch = getattr(app_mod, "_fetch_page_text", None) if app_mod else None
+        extract = getattr(app_mod, "_extract_section_priority", None) if app_mod else None
+        make = getattr(app_mod, "_make_chatbot_result", None) if app_mod else None
+        if callable(fetch) and callable(extract) and callable(make):
+            page = fetch("https://demdikk.sn/chatbot-2303/")
+            if any(m in q_norm for m in ("perdu", "perdue", "volee", "vole", "duplicata", "opposition")):
+                section = extract(
+                    page or "",
+                    ("Carte perdue/volée", "Carte perdue/volee", "opposition et duplicata"),
+                    max_chars=600,
+                )
+                if section and _tek_dem_answer_satisfies_intent(q_norm, section):
+                    flat = re.sub(r"\s+", " ", section)
+                    m = re.search(r"Carte perdue[^.]*opposition et duplicata\.?", flat, re.I)
+                    if m:
+                        section = m.group(0).strip()
+                    out = make(section)
+                    out.setdefault("query_type", "general")
+                    out.setdefault("show_more_info", True)
+                    return out, "faq_extract_perdu"
+            if any(m in q_norm for m in ("prix", "tarif", "combien", "abonnement", "etudiant", "adulte")):
+                section = extract(
+                    page or "",
+                    ("Tek Dem : rechargeable", "Abonnements mensuels", "Carte Tek Dem"),
+                    max_chars=900,
+                )
+                if section and _tek_dem_answer_satisfies_intent(q_norm, section):
+                    out = make(section)
+                    out.setdefault("query_type", "general")
+                    out.setdefault("show_more_info", True)
+                    return out, "faq_extract_tarif"
+    except Exception:
+        pass
+    if callable(search_faq):
+        for q in _tek_dem_specific_search_queries(question, q_norm):
+            try:
+                fb = search_faq(q)
+                faq_score = faq_score_fn(fb) if callable(faq_score_fn) else 0.0
+                faq_ok = callable(faq_usable_fn) and faq_usable_fn(fb, question, q_norm)
+                ans = (fb or {}).get("answer") or ""
+                if (
+                    fb
+                    and faq_score >= _TRIGGER_FAQ_MIN_SCORE
+                    and faq_ok
+                    and _tek_dem_answer_satisfies_intent(q_norm, ans)
+                ):
+                    out = dict(fb)
+                    out.setdefault("query_type", "general")
+                    out.setdefault("show_more_info", True)
+                    return out, f"faq score={faq_score:.2f}"
+            except Exception:
+                continue
+    try:
+        best: dict | None = None
+        best_score = -1.0
+        seen: set[str] = set()
+        for q in _tek_dem_specific_search_queries(question, q_norm):
+            for hit in (_search(q, top_k=8) or []):
+                content = (hit.get("content") or "").strip()
+                key = _norm(content)[:240]
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                if not _tek_dem_rag_hit_usable(q_norm, hit):
+                    continue
+                score = float(hit.get("score") or 0)
+                if score > best_score:
+                    best_score = score
+                    best = hit
+        if best and best_score >= _TRIGGER_RAG_MIN_SCORE:
+            out = _payload_from_rag_hit(best)
+            out.setdefault("query_type", "general")
+            out.setdefault("show_more_info", True)
+            return out, f"rag score={best_score:.2f} title={(best.get('title') or '')[:50]!r}"
+    except Exception as exc:
+        return None, f"rag_error={exc!r}"
+    return None, "no_hit"
 
 
 def _interurban_rag_content_usable(content: str) -> bool:
@@ -2308,9 +2803,32 @@ def _try_ddd_service_fallback(question: str, q_norm: str) -> dict | None:
 
 
 def _json_service_payload(question: str, q_norm: str) -> dict | None:
+    colis_matched = None
+    if _is_colis_service_query(q_norm):
+        colis_matched = next(t for t in _COLIS_TRIGGERS if t in q_norm)
+        if _colis_has_specific_intent(q_norm):
+            specific, reason = _try_colis_specific_answer(question, q_norm)
+            if specific:
+                _debug_fixed_trigger(
+                    "colis", f"keyword={colis_matched!r} specific=yes source={reason}"
+                )
+                return {
+                    "answer": specific["answer"],
+                    "summary": specific.get("summary", "Service messagerie")[:200],
+                    "sources": specific.get("sources", []),
+                    "results": specific.get("results", []),
+                    "query_type": "general",
+                    "has_structured_data": False,
+                    "is_city_query": False,
+                    "is_line_query": False,
+                    "needs_clarification": False,
+                    "show_more_info": True,
+                }
     com = _try_ddd_service_fallback(question, q_norm)
     if not com or not com.get("answer"):
         return None
+    if colis_matched:
+        _debug_fixed_trigger("colis", f"keyword={colis_matched!r} specific=no source=fixe")
     summary = com.get("summary", "Service Dakar Dem Dikk")[:200]
     return {
         "answer": com["answer"],

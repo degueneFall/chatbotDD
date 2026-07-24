@@ -1958,6 +1958,12 @@ def _line_looks_like_section_title(stripped: str) -> bool:
         return False
     if stripped.endswith(":"):
         return False
+    # Numéros de téléphone (+221 …) — pas un titre de section
+    if _re.match(r"^\+?\d[\d\s\-().]{6,}\.?$", stripped):
+        return False
+    # Lignes commençant par « Ou » (suite d'une énumération, pas un titre)
+    if _re.match(r"^Ou\s+", stripped, _re.I):
+        return False
     if _re.match(r"^\d+\.\s+[A-ZÀ-Ü]", stripped):
         return True
     if _re.match(r"^(Google Play|App Store|Sur iPhone|Sur Android)\b", stripped, _re.I):
@@ -2079,6 +2085,36 @@ def _search_chatbot_page_blocks(question: str) -> dict | None:
             "Bagages et colis : règles et conditions",
             "Bagages à bord",
         )),
+        ("suivre", ("Pour suivre votre colis",)),
+        ("suivi", ("Pour suivre votre colis", "Suivi de colis")),
+        ("colis", (
+            "Tarifs pour l'envoi de colis",
+            "Tarifs pour l'envoi de colis",
+            "Nos tarifs sont très compétitifs",
+            "SERVICE MESSAGERIE EXPRESS (COLIS ET COURRIERS)",
+        )),
+        ("messagerie", (
+            "Tarifs pour l'envoi de colis",
+            "SERVICE MESSAGERIE EXPRESS (COLIS ET COURRIERS)",
+        )),
+        ("courrier", (
+            "Tarifs pour l'envoi de colis",
+            "SERVICE MESSAGERIE EXPRESS (COLIS ET COURRIERS)",
+        )),
+        ("tek dem", (
+            "Tek Dem : rechargeable",
+            "Carte Tek Dem",
+            "pass Tek Dem",
+        )),
+        ("tekdem", (
+            "Tek Dem : rechargeable",
+            "Carte Tek Dem",
+        )),
+        ("rechargement", (
+            "recharger",
+            "rechargement",
+            "Tek Dem",
+        )),
         ("recrutement", ("recrutement", "Recrutement", "offres d'emploi")),
         ("emploi", ("recrutement", "Recrutement", "offres d'emploi")),
         ("remboursement", (
@@ -2130,6 +2166,7 @@ def _search_chatbot_page_blocks(question: str) -> dict | None:
             section = _extract_section_priority(page_text, markers, max_chars=1800)
             if section and len(section) >= 40 and not _block_looks_like_nav_junk(section):
                 section = _clip_at_next_section_title(section)
+                section = _faq_clip_for_question_intent(question, qn_raw, section)
                 result = _make_chatbot_result(section)
                 result["sources"] = [{"title": "FAQ Dakar Dem Dikk", "url": url, "score": 0.95}]
                 if result.get("results"):
@@ -2190,6 +2227,7 @@ def _search_chatbot_page_blocks(question: str) -> dict | None:
         pass
 
     section = _clip_at_next_section_title(best[:1800])
+    section = _faq_clip_for_question_intent(question, qn_raw, section)
     result = _make_chatbot_result(section)
     result["sources"] = [{
         "title": "FAQ Dakar Dem Dikk",
@@ -2531,9 +2569,35 @@ def _light_clean(text: str) -> str:
     )
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = re.sub(r'[ \t]+', ' ', text)
+    # Disclaimer générique en bas de page chatbot-2303
+    text = re.sub(
+        r"site web officiel de dakar dem dikk\s+pour toute information sensible ou offre officielle\.?",
+        "",
+        text,
+        flags=re.I,
+    )
     # Supprimer les puces/tirets isolés en fin de texte
     text = re.sub(r'(\s*' + _BULLET_CHARS + r'\s*)+$', '', text.rstrip())
     return text.strip()
+
+
+def _faq_clip_for_question_intent(question: str, qn_raw: str, section: str) -> str:
+    """Rogne les sections FAQ non pertinentes (ex. tarification après une question suivi colis)."""
+    text = (section or "").strip()
+    if not text:
+        return text
+    if any(k in qn_raw for k in ("suivi", "suivre", "tracking")) and "colis" in qn_raw:
+        for marker in ("\n\nTarification", "\nTarification", "\n\nLes tarifs", "\n\nNos tarifs"):
+            idx = text.find(marker)
+            if idx > 0:
+                return text[:idx].strip()
+    if any(k in qn_raw for k in ("poids", "dimension", "maximum", "tarif", "prix", "combien")):
+        if "colis" in qn_raw or "messagerie" in qn_raw:
+            for marker in ("\n\nSuivi de colis", "\nSuivi de colis", "\n\nPour suivre"):
+                idx = text.find(marker)
+                if idx > 0:
+                    return text[:idx].strip()
+    return text
 
 
 def _make_chatbot_result(section: str) -> dict:
@@ -2736,11 +2800,21 @@ if _original_ask:
             if data.get("query_type") in ("city_info", "interurban_overview"):
                 return (_reply(data, enhance=False), *rest) if rest else _reply(data, enhance=False)
 
-            # AIBD : forcer le fallback navette même si app_backup a renvoyé un arrêt (Ligne TAF TAF)
-            _aibd_triggers = ("aibd", "aeroport", "navette", "blaise diagne", "blaise-diagne")
-            if any(t in qn for t in _aibd_triggers):
+            # TRIGGER 1 — AIBD / navette (app.py ~2739, logique intent dans app_backup)
+            _aibd_triggers = getattr(_mod, "_AIBD_TRIGGERS", ())
+            _aibd_intent = getattr(_mod, "_aibd_has_specific_intent", None)
+            _try_aibd = getattr(_mod, "_try_aibd_specific_answer", None)
+            _dbg_trigger = getattr(_mod, "_debug_fixed_trigger", lambda *_: None)
+            if _aibd_triggers and any(t in qn for t in _aibd_triggers):
+                matched = next(t for t in _aibd_triggers if t in qn)
+                if callable(_aibd_intent) and _aibd_intent(qn) and callable(_try_aibd):
+                    specific, reason = _try_aibd(question, qn)
+                    if specific:
+                        _dbg_trigger("aibd", f"keyword={matched!r} specific=yes source={reason}")
+                        return (_reply(specific, enhance=False), *rest) if rest else _reply(specific, enhance=False)
                 fb_aibd = _fallback_from_site(question)
                 if fb_aibd:
+                    _dbg_trigger("aibd", f"keyword={matched!r} specific=no source=fixe")
                     return (_reply(fb_aibd, enhance=False), *rest) if rest else _reply(fb_aibd, enhance=False)
 
             interurban_triggers = (
@@ -2789,10 +2863,61 @@ if _original_ask:
                     data = fb_app
                     rag_ok = _rag_answer_usable(data)
 
-            # Colis / messagerie : idem — ne court-circuite pas un bon chunk indexé
-            if any(k in qn for k in ("colis", "messagerie", "courrier")) and not rag_ok:
+            # TRIGGER 3 — Tek Dem (app.py ~2900, logique intent dans app_backup)
+            _tek_match_fn = getattr(_mod, "_matches_tek_dem_trigger", None)
+            _tek_intent = getattr(_mod, "_tek_dem_has_specific_intent", None)
+            _try_tek = getattr(_mod, "_try_tek_dem_specific_answer", None)
+            _tek_match = _tek_match_fn(qn) if callable(_tek_match_fn) else None
+            if _tek_match:
+                if callable(_tek_intent) and _tek_intent(qn) and callable(_try_tek):
+                    specific, reason = _try_tek(question, qn)
+                    if specific:
+                        _dbg_trigger("tek_dem", f"keyword={_tek_match!r} specific=yes source={reason}")
+                        return (_reply(specific, enhance=False), *rest) if rest else _reply(specific, enhance=False)
+                fb_tek = _fallback_from_site(question)
+                _tek_fixe = getattr(_mod, "_tek_dem_fixe_payload", None)
+                if callable(_tek_fixe) and fb_tek:
+                    fb_tek = _tek_fixe(fb_tek)
+                if fb_tek:
+                    _dbg_trigger("tek_dem", f"keyword={_tek_match!r} specific=no source=fixe")
+                    return (_reply(fb_tek, enhance=False), *rest) if rest else _reply(fb_tek, enhance=False)
+
+            # TRIGGER 2 — Colis / messagerie (app.py ~2802, logique intent dans app_backup)
+            _colis_keys = getattr(_mod, "_COLIS_TRIGGERS", ("colis", "messagerie", "courrier"))
+            _colis_intent = getattr(_mod, "_colis_has_specific_intent", None)
+            _try_colis = getattr(_mod, "_try_colis_specific_answer", None)
+            if any(k in qn for k in _colis_keys):
+                colis_matched = next(k for k in _colis_keys if k in qn)
+                if callable(_colis_intent) and _colis_intent(qn) and callable(_try_colis):
+                    already_faq = (
+                        _faq_answer_usable(data, question, qn)
+                        and _chatbot_faq_score(data) >= 0.5
+                    )
+                    if not already_faq:
+                        specific, reason = _try_colis(question, qn)
+                        if specific:
+                            _dbg_trigger("colis", f"keyword={colis_matched!r} specific=yes source={reason}")
+                            return (_reply(specific, enhance=False), *rest) if rest else _reply(specific, enhance=False)
+                    else:
+                        clip_fn = getattr(_mod, "_colis_clip_answer_for_intent", None)
+                        out = dict(data)
+                        if callable(clip_fn):
+                            clipped = clip_fn(qn, out.get("answer") or "")
+                            out["answer"] = clipped
+                            out["summary"] = clipped[:200]
+                        _dbg_trigger("colis", f"keyword={colis_matched!r} specific=yes source=backup_faq")
+                        return (_reply(out, enhance=False), *rest) if rest else _reply(out, enhance=False)
+                elif not (callable(_colis_intent) and _colis_intent(qn)):
+                    colis_fb = data if (data.get("answer") and _faq_answer_usable(data, question, qn)) else None
+                    if not colis_fb:
+                        colis_fb = _fallback_from_site(question)
+                    if colis_fb:
+                        _dbg_trigger("colis", f"keyword={colis_matched!r} specific=no source=fixe")
+                        return (_reply(colis_fb, enhance=False), *rest) if rest else _reply(colis_fb, enhance=False)
+            if any(k in qn for k in _colis_keys) and not rag_ok:
                 fb2 = _fallback_from_site(question)
                 if fb2:
+                    _dbg_trigger("colis", f"keyword={colis_matched!r} specific=no source=fixe")
                     return (_reply(fb2, enhance=False), *rest) if rest else _reply(fb2, enhance=False)
 
             # Fallback page officielle (scraping live) seulement si l'index n'a pas déjà répondu correctement.
