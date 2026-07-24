@@ -1512,49 +1512,18 @@ def _fetch_page_text(url: str) -> str | None:
 
 
 def _fallback_interurban(question: str) -> dict | None:
-    """Réponse courte interurbain : intro + liste des destinations."""
+    """Réponse interurbain — délègue à app_backup (_json_interurban_overview)."""
     qn = _norm(question)
     if not qn:
         return None
     try:
         impl = sys.modules.get("app_flask_impl")
         if impl:
-            is_overview = getattr(impl, "_is_interurban_overview_query", None)
-            fmt = getattr(impl, "_format_interurban_overview", None)
-            if is_overview and fmt and is_overview(qn, question):
-                answer = fmt()
-                return {
-                    "answer": answer,
-                    "summary": answer[:280],
-                    "bullets": [],
-                    "sources": [{
-                        "title": "Réseau Interurbain DDD",
-                        "url": "https://demdikk.sn/reseau-interurbain/",
-                        "score": 1.0,
-                    }],
-                    "results": [{"content": answer}],
-                    "query_type": "interurban_overview",
-                    "needs_clarification": False,
-                    "has_structured_data": True,
-                    "is_city_query": False,
-                    "is_line_query": False,
-                    "show_more_info": True,
-                }
+            fn = getattr(impl, "_json_interurban_overview", None)
+            if callable(fn):
+                return fn(question, qn)
     except Exception:
         pass
-    triggers = (
-        "senegal dem dikk",
-        "sénégal dem dikk",
-        "interurbain",
-        "interurbains",
-        "reseau-interurbain",
-        "réseau-interurbain",
-        "dieuppeul",
-        "gare routiere de dieuppeul",
-        "gare routière de dieuppeul",
-    )
-    if not any(t in qn for t in triggers):
-        return None
     return None
 
 
@@ -1610,6 +1579,41 @@ def _fallback_publicite_partenariat(question: str) -> dict | None:
     return result
 
 
+_AFRIQUE_NAME_QUERIES = frozenset({
+    "afrique dem dikk", "afrique demdikk", "add",
+})
+
+_AFRIQUE_SHORT_PRESENTATION = (
+    "Afrique Dem Dikk (ADD) est le réseau international de Dakar Dem Dikk. "
+    "Il assure des liaisons transfrontalières, notamment Dakar–Banjul (Gambie). "
+    "Départs Dakar → Banjul : 7h00 et 9h00 ; Banjul → Dakar : 7h30 et 10h00. "
+    "Réservation : application Dem Dikk, agence ou +221 33 824 10 10."
+)
+
+
+def _is_bare_afrique_dem_dikk_query(qn: str) -> bool:
+    """ADD / Afrique Dem Dikk seul — synthèse courte (pas le pavé chatbot-2303)."""
+    qn = (qn or "").strip()
+    return qn in _AFRIQUE_NAME_QUERIES
+
+
+def _afrique_short_presentation_payload() -> dict:
+    url = "https://demdikk.sn/reseau-international/"
+    return {
+        "answer": _AFRIQUE_SHORT_PRESENTATION,
+        "summary": "Afrique Dem Dikk (ADD)",
+        "bullets": [],
+        "sources": [{"title": "Afrique Dem Dikk – DDD", "url": url, "score": 1.0}],
+        "results": [],
+        "query_type": "general",
+        "needs_clarification": False,
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "show_more_info": True,
+    }
+
+
 def _fallback_afrique_dem_dikk(question: str) -> dict | None:
     """Extrait du contenu utile sur 'Afrique Dem Dikk' depuis la page officielle chatbot."""
     qn = _norm(question)
@@ -1623,9 +1627,13 @@ def _fallback_afrique_dem_dikk(question: str) -> dict | None:
         "gambia",
         "banjul",
         "senegal",
+        "add",
     )
     if not any(t in qn for t in triggers):
         return None
+
+    if _is_bare_afrique_dem_dikk_query(qn):
+        return _afrique_short_presentation_payload()
 
     url = "https://demdikk.sn/chatbot-2303/"
     page_text = _fetch_page_text(url)
@@ -2203,9 +2211,12 @@ def _smart_search_chatbot_page(question: str) -> dict | None:
 def _fallback_presentation_page(question: str) -> dict | None:
     """
     Fallback ciblé sur la page présentation de DDD.
-    Utilisé pour les questions sur les directeurs, l'historique, l'actionnariat, etc.
-    Retourne directement le texte complet de la page (sans découpe) comme contexte.
+    Nom de la société seul → synthèse courte ; sinon scrape de demdikk.sn/presentation/.
     """
+    qn = _norm(question)
+    if _is_bare_company_name_query(qn):
+        return _company_short_presentation_payload()
+
     import sys as _sys
     url = "https://demdikk.sn/presentation/"
     try:
@@ -2234,6 +2245,45 @@ _COMPANY_NAME_QUERIES = frozenset({
     "dakar dem dikk", "dem dikk", "demdikk", "ddd",
     "dakar dem-dikk", "dakar demdikk",
 })
+
+_COMPANY_SHORT_PRESENTATION = (
+    "Dakar Dem Dikk (DDD) est l'opérateur public de transport en commun au Sénégal. "
+    "Créée en janvier 2001, elle gère le réseau urbain de Dakar et sa banlieue, "
+    "le réseau interurbain Sénégal Dem Dikk, les navettes AIBD et les liaisons Afrique Dem Dikk. "
+    "Assistance : +221 33 824 10 10."
+)
+
+
+def _is_bare_company_name_query(qn: str) -> bool:
+    """Nom de la société seul (DDD, Dakar Dem Dikk…) — pas historique / directeurs / mission détaillée."""
+    qn = (qn or "").strip()
+    if not qn:
+        return False
+    if qn in _COMPANY_NAME_QUERIES:
+        return True
+    if qn.replace(" ", "") in {"demdikk", "ddd"}:
+        return True
+    tokens = [t for t in qn.split() if t not in ("de", "la", "le", "les", "du", "des", "sur", "a", "au")]
+    return bool(
+        tokens
+        and all(t in {"dakar", "dem", "dikk", "demdikk", "ddd"} for t in tokens)
+    )
+
+
+def _company_short_presentation_payload() -> dict:
+    url = "https://demdikk.sn/presentation/"
+    return {
+        "answer": _COMPANY_SHORT_PRESENTATION,
+        "summary": "Dakar Dem Dikk (DDD)",
+        "sources": [{"title": "Présentation – Dakar Dem Dikk", "url": url, "score": 1.0}],
+        "results": [],
+        "query_type": "general",
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "needs_clarification": False,
+        "show_more_info": True,
+    }
 
 
 _PRESENTATION_EXCLUDE_HINTS = (
@@ -2633,11 +2683,19 @@ if _original_ask:
             if fb_pub and fb_pub.get("answer"):
                 return _reply(fb_pub)
 
+        # « Que signifie SDD / DDD / ADD ? » — avant présentation longue
+        _acr_fn = getattr(_mod, "_json_acronym_definition", None)
+        if callable(_acr_fn):
+            _acr_payload = _acr_fn(question, qn)
+            if _acr_payload:
+                return _reply(_acr_payload, enhance=False)
+
         # ── Présentation DDD (nom de la société, « c'est quoi DDD », etc.) ───
         if _is_presentation_query(question, qn):
             fb_pres = _fallback_presentation_page(question)
             if fb_pres:
-                return _reply(fb_pres)
+                enhance_pres = not _is_bare_company_name_query(qn)
+                return _reply(fb_pres, enhance=enhance_pres)
 
         # Hors-sujet : mots ambigus (sport, météo…) seulement sans contexte transport DDD
         if _is_strict_off_topic(question, qn):
@@ -2696,15 +2754,20 @@ if _original_ask:
             )
             wants_interurban = any(t in qn for t in interurban_triggers)
             fb_i = _fallback_interurban(question)
-            if fb_i and wants_interurban:
-                return (_reply(fb_i, enhance=False), *rest) if rest else _reply(fb_i, enhance=False)
+            _acr_def_q = getattr(_mod, "_is_acronym_definition_query", None)
+            if fb_i and wants_interurban and not (callable(_acr_def_q) and _acr_def_q(qn)):
+                qt_i = fb_i.get("query_type") or data.get("query_type")
+                # Liste destinations / fiche ville : pas de reformulation LLM
+                enhance_i = qt_i not in ("city_info", "interurban_overview")
+                return (_reply(fb_i, enhance=enhance_i), *rest) if rest else _reply(fb_i, enhance=enhance_i)
 
             # Afrique Dem Dikk : prioritaire pour "gambie/senegal/banjul/afrique"
-            af_triggers = ("afrique dem dikk", "afrique", "gambie", "gambia", "banjul", "senegal")
+            af_triggers = ("afrique dem dikk", "afrique", "gambie", "gambia", "banjul", "senegal", "add")
             wants_afrique = any(t in qn for t in af_triggers)
             fb_a = _fallback_afrique_dem_dikk(question)
             if fb_a and wants_afrique:
-                return (_reply(fb_a), *rest) if rest else _reply(fb_a)
+                enhance_a = not _is_bare_afrique_dem_dikk_query(qn)
+                return (_reply(fb_a, enhance=enhance_a), *rest) if rest else _reply(fb_a, enhance=enhance_a)
 
             ans = (data.get("answer") or "").strip()
             if "je n'ai pas trouv" in ans.lower():

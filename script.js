@@ -247,19 +247,35 @@ function normalizeFr(text) {
     .trim()
 }
 
+/** Marqueurs alignés sur app_backup._INTERURBAIN_OVERVIEW_INTENT_MARKERS */
+const INTERURBAIN_SPECIFIC_INTENT_MARKERS = [
+  'comment', 'pourquoi', 'fonctionne', 'fonctionnement',
+  'avantage', 'avantages', 'historique', 'difference',
+  'c est quoi', 'qu est ce que', 'explique',
+  'signifie', 'signification', 'veut dire', 'que signifie',
+]
+
+function hasInterurbanSpecificIntent(text) {
+  const n = normalizeFr(text || '')
+  if (!n) return false
+  return INTERURBAIN_SPECIFIC_INTENT_MARKERS.some((m) => n.includes(m))
+}
+
 function isVagueQuestion(q) {
   const norm = normalizeFr(q)
   if (!norm) return true
   // Pays / marque liés au réseau interurbain : on envoie une question ciblée (pas de menu)
   if (norm === 'senegal' || norm === 'gambie' || norm === 'gambia'
       || norm === 'afrique dem dikk' || norm === 'afrique demdikk'
-      || norm === 'senegal dem dikk' || norm === 'sengal dem dikk') return false
+      || norm === 'senegal dem dikk' || norm === 'sengal dem dikk'
+      || norm === 'dakar dem dikk' || norm === 'ddd' || norm === 'demdikk' || norm === 'dem dikk'
+      || norm === 'add') return false
   const words = norm.split(' ').filter(Boolean)
   if (words.length <= 1) {
     // Un seul mot : envoyer au backend par défaut (villes, « horaires », « touba », etc.).
     // Menu seulement pour des termes vraiment ambigus sans intention.
     const ambiguousSingles = new Set([
-      'dakar', 'ddd', 'demdikk', 'dem', 'dikk',
+      'dakar', 'dem', 'dikk',
       'info', 'informations',
       'transport', 'bus', 'voyage', 'voyager'
     ])
@@ -280,6 +296,7 @@ function isVagueQuestion(q) {
   if (/\b(mission|presentation|presentations|histoire|vision|valeurs|objectif|objectifs|creation|entreprise|societe)\b/.test(norm)) {
     return false
   }
+  if (hasInterurbanSpecificIntent(norm)) return false
   const intentWords = [
     'horaire', 'horaires', 'prix', 'tarif', 'tarifs', 'reservation', 'réservation', 'reserver', 'réserver',
     'billet', 'ticket', 'ligne', 'lignes', 'abonnement', 'abonnements', 'tek', 'colis', 'messagerie', 'contact',
@@ -287,6 +304,7 @@ function isVagueQuestion(q) {
     'emploi', 'recrutement', 'postuler', 'stage',
     'afrique', 'gambie', 'banjul', 'international',
     'mission', 'presentation', 'histoire', 'vision', 'valeurs', 'objectif', 'interurbain',
+    'comment', 'pourquoi', 'fonctionne', 'fonctionnement', 'avantage', 'avantages', 'explique',
   ]
   const hasIntent = intentWords.some(w => norm.includes(w))
   if (!hasIntent) {
@@ -351,6 +369,7 @@ async function showInterurbanDestinationPicker(bubble) {
 
 function isInterurbanOverviewQuery(text) {
   const n = normalizeFr(text || '')
+  if (hasInterurbanSpecificIntent(n)) return false
   if (n.length < 12) return false
   const hasInter = n.includes('interurbain')
   const hasBrand = n.includes('senegal dem dikk') || n.includes('sénégal dem dikk')
@@ -1064,9 +1083,8 @@ function expandShortQuery(q) {
 
   const afQ = "Afrique Dem Dikk : destinations (ex: Gambie/Banjul), horaires, points de départ, réservation et tarifs"
   if (normFixed === 'senegal' || normFixed === 'gambie' || normFixed === 'gambia') return afQ
-  const sddQ = 'Réseau Sénégal Dem Dikk (interurbain) : horaires, points de départ et réservation'
-  if (normFixed === 'sdd') return sddQ
-  if (normFixed === 'senegal dem dikk' || normFixed.includes('senegal dem dikk')) return sddQ
+  if (normFixed === 'add') return 'afrique dem dikk'
+  // SDD / Sénégal Dem Dikk seul → laisser l'API renvoyer la présentation (pas la grille destinations)
 
   const words = normFixed.split(' ').filter(Boolean)
   if (words.length > 2) return raw
@@ -1526,6 +1544,7 @@ form.addEventListener('submit', async (e)=>{
       const useProseAnswer =
         json.query_type === 'city_info' ||
         json.query_type === 'comparison' ||
+        json.query_type === 'general' ||
         (!isCityQuery && !isLineQuery && !hasIndexedSnippet && !structuredInAnswer)
 
       // Formater la réponse

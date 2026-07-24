@@ -128,6 +128,7 @@ def _norm(s: str) -> str:
 _QUERY_ACRONYMS = {
     "sdd": "senegal dem dikk",
     "ddd": "dakar dem dikk",
+    "add": "afrique dem dikk",
 }
 
 
@@ -139,6 +140,94 @@ def _expand_query_acronyms(question: str) -> str:
     for acr, expansion in _QUERY_ACRONYMS.items():
         q = re.sub(rf"(?<!\w){re.escape(acr)}(?!\w)", expansion, q, flags=re.I)
     return q
+
+
+_ACRONYM_DEFINITION_MARKERS = (
+    "que signifie",
+    "qu est ce que",
+    "quest ce que",
+    "c est quoi",
+    "c est qui",
+    "signifie",
+    "signification",
+    "veut dire",
+    "que veut dire",
+)
+
+_ACRONYM_DEFINITIONS = (
+    (
+        ("add", "afrique dem dikk"),
+        "ADD",
+        "Afrique Dem Dikk",
+        "le réseau international de Dakar Dem Dikk (liaisons transfrontalières, ex. Dakar–Banjul).",
+    ),
+    (
+        ("sdd", "senegal dem dikk", "sengal dem dikk"),
+        "SDD",
+        "Sénégal Dem Dikk",
+        "le réseau interurbain de Dakar Dem Dikk, reliant Dakar aux principales villes du Sénégal.",
+    ),
+    (
+        ("ddd", "dakar dem dikk", "demdikk"),
+        "DDD",
+        "Dakar Dem Dikk",
+        "l'opérateur public de transport en commun au Sénégal (urbain, interurbain, AIBD, international).",
+    ),
+    (
+        ("dem dikk",),
+        "DDD",
+        "Dakar Dem Dikk",
+        "l'opérateur public de transport en commun au Sénégal (urbain, interurbain, AIBD, international).",
+    ),
+)
+
+
+def _match_acronym_definition_entry(q_norm: str) -> tuple[str, str, str] | None:
+    qn = (q_norm or "").strip()
+    if not qn:
+        return None
+    for keys, sigle, name, role in _ACRONYM_DEFINITIONS:
+        for k in keys:
+            if k in qn:
+                return sigle, name, role
+            if len(k) <= 4 and re.search(rf"(?<!\w){re.escape(k)}(?!\w)", qn):
+                return sigle, name, role
+    return None
+
+
+def _is_acronym_definition_query(q_norm: str) -> bool:
+    qn = (q_norm or "").strip()
+    if not qn or not any(m in qn for m in _ACRONYM_DEFINITION_MARKERS):
+        return False
+    return _match_acronym_definition_entry(qn) is not None
+
+
+def _json_acronym_definition(question: str, q_norm: str) -> dict | None:
+    """« Que signifie SDD ? » → définition courte du sigle."""
+    if not _is_acronym_definition_query(q_norm):
+        return None
+    matched = _match_acronym_definition_entry(q_norm)
+    if not matched:
+        return None
+    sigle, name, role = matched
+    answer = f"{sigle} signifie {name} : {role}"
+    more_url = "https://demdikk.sn/"
+    if sigle == "SDD":
+        more_url = "https://demdikk.sn/reseau-interurbain/"
+    elif sigle == "ADD":
+        more_url = "https://demdikk.sn/reseau-international/"
+    return {
+        "answer": answer,
+        "summary": f"{sigle} — {name}",
+        "sources": [{"title": name, "url": more_url, "score": 1.0}],
+        "results": [],
+        "query_type": "general",
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "needs_clarification": False,
+        "show_more_info": True,
+    }
 
 
 # ── Correction de fautes ──────────────────────────────────────────────────────
@@ -361,10 +450,407 @@ def _is_interurban_overview_query(qn: str, question: str = "") -> bool:
     return True
 
 
-def _json_interurban_overview(question: str, q_norm: str) -> dict | None:
-    if not _is_interurban_overview_query(q_norm, question):
-        return None
-    answer = _format_interurban_overview()
+_INTERURBAIN_OVERVIEW_INTENT_MARKERS = (
+    "comment",
+    "pourquoi",
+    "fonctionne",
+    "fonctionnement",
+    "avantage",
+    "avantages",
+    "historique",
+    "difference",
+    "c est quoi",
+    "qu est ce que",
+    "explique",
+)
+_INTERURBAIN_OVERVIEW_RAG_MIN_SCORE = 0.30
+_INTERURBAIN_OVERVIEW_FAQ_MIN_SCORE = 0.5
+_INTERURBAIN_RAG_LABEL_ONLY = frozenset({
+    "destinations senegal dem dikk",
+    "senegal dem dikk",
+})
+
+
+def _debug_interurban_overview(message: str) -> None:
+    if os.environ.get("FLASK_DEBUG", "1") == "1":
+        print(f"[interurban_overview] {message}")
+
+
+def _interurban_overview_has_specific_intent(qn: str) -> bool:
+    """Intention autre qu'une simple liste de destinations."""
+    qn = (qn or "").strip()
+    if not qn:
+        return False
+    return any(marker in qn for marker in _INTERURBAIN_OVERVIEW_INTENT_MARKERS)
+
+
+def _interurban_overview_faq_helpers() -> tuple:
+    try:
+        import sys as _sys
+        app_mod = _sys.modules.get("app")
+        if not app_mod:
+            return None, None, None
+        return (
+            getattr(app_mod, "_search_chatbot_page_blocks", None),
+            getattr(app_mod, "_chatbot_faq_score", None),
+            getattr(app_mod, "_faq_answer_usable", None),
+        )
+    except Exception:
+        return None, None, None
+
+
+def _interurban_rag_content_usable(content: str) -> bool:
+    """Ignore les libellés courts type « Destinations Sénégal Dem Dikk »."""
+    c = (content or "").strip()
+    if len(c) < 80:
+        return False
+    cn = _norm(c)
+    if cn in _INTERURBAIN_RAG_LABEL_ONLY:
+        return False
+    lines = [ln.strip() for ln in c.split("\n") if ln.strip()]
+    if len(lines) == 1 and len(lines[0]) < 55:
+        return False
+    return True
+
+
+def _interurban_specific_search_queries(question: str, q_norm: str) -> list[str]:
+    queries = [question]
+    if any(
+        m in q_norm
+        for m in (
+            "comment", "fonctionne", "fonctionnement",
+            "c est quoi", "qu est ce que", "explique", "historique",
+        )
+    ):
+        queries.append("Sénégal Dem Dikk définition rôle mission offre interurbaine")
+        queries.append("Senegal Dem Dikk lancé février 2017 cars interurbains")
+    if any(m in q_norm for m in ("avantage", "avantages", "pourquoi")):
+        queries.append("avantages Sénégal Dem Dikk confort bus fidélité")
+        queries.append("programme fidélité voyageurs Sénégal Dem Dikk")
+    seen: set[str] = set()
+    out: list[str] = []
+    for q in queries:
+        key = _norm(q)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(q)
+    return out
+
+
+def _is_bare_senegal_dem_dikk_query(q_norm: str) -> bool:
+    """Requête = marque seule (SDD / Sénégal Dem Dikk), sans autre mot."""
+    qn = (q_norm or "").strip()
+    return qn in ("senegal dem dikk", "sengal dem dikk", "sdd")
+
+
+def _interurban_presentation_text() -> str:
+    return (
+        "Sénégal Dem Dikk (SDD) est l'offre interurbaine de Dakar Dem Dikk, lancée le 1er février 2017. "
+        "Elle relie Dakar aux principales villes du pays (Saint-Louis, Thiès, Kaolack, Ziguinchor, "
+        "Kédougou, Tambacounda, etc.) avec des cars de grand tourisme (sièges inclinables, espace bagages). "
+        "Le réseau compte environ 80 lignes interurbaines. "
+        "Réservation : application mobile Dem Dikk, agences ou gares routières — assistance au +221 33 824 10 10."
+    )
+
+
+def _interurban_fonctionnement_text() -> str:
+    return (
+        "Sénégal Dem Dikk (SDD) est le réseau interurbain de Dakar Dem Dikk : des cars relient Dakar "
+        "aux grandes villes du Sénégal (Saint-Louis, Thiès, Kaolack, Ziguinchor, Tambacounda, etc.).\n\n"
+        "Comment ça fonctionne :\n"
+        "• Réservation : application mobile Dem Dikk, agences ou gares routières "
+        "(notamment le Terminus Liberté 5 à Dakar).\n"
+        "• Départs : horaires selon la destination (souvent le matin vers 7h–8h, parfois l'après-midi).\n"
+        "• À bord : cars grand tourisme avec sièges inclinables et espace bagages.\n"
+        "• Tarifs : forfait selon la destination.\n\n"
+        "Assistance : +221 33 824 10 10."
+    )
+
+
+def _interurban_avantages_text() -> str:
+    return (
+        "Les avantages de Sénégal Dem Dikk :\n"
+        "• Couverture nationale : environ 80 lignes et une vingtaine de destinations.\n"
+        "• Confort : cars de grand tourisme (sièges inclinables, espace bagages accru).\n"
+        "• Bus connectés pour voyager sereinement entre les régions.\n"
+        "• Programme de fidélité pour les voyageurs réguliers (points échangeables contre des titres de transport).\n"
+        "• Réservation flexible via l'application, en agence ou en gare.\n\n"
+        "Assistance : +221 33 824 10 10."
+    )
+
+
+def _interurban_curated_answer(q_norm: str) -> str | None:
+    if _is_bare_senegal_dem_dikk_query(q_norm):
+        return _interurban_presentation_text()
+    if any(
+        m in q_norm
+        for m in (
+            "comment", "fonctionne", "fonctionnement",
+            "c est quoi", "qu est ce que", "explique", "historique",
+        )
+    ):
+        return _interurban_fonctionnement_text()
+    if any(m in q_norm for m in ("avantage", "avantages", "pourquoi")):
+        return _interurban_avantages_text()
+    return None
+
+
+def _try_interurban_presentation_answer(question: str, q_norm: str) -> tuple[dict, str]:
+    """Présentation du réseau SDD (marque seule) — RAG puis texte structuré."""
+    pres_queries = [
+        question,
+        "Sénégal Dem Dikk présentation offre interurbaine",
+        "Senegal Dem Dikk lancé février 2017 cars interurbains",
+    ]
+    seen_q: set[str] = set()
+    seen_content: set[str] = set()
+    best: dict | None = None
+    best_score = -1.0
+    for q in pres_queries:
+        key = _norm(q)
+        if not key or key in seen_q:
+            continue
+        seen_q.add(key)
+        for search_fn in (_search, _keyword_search):
+            try:
+                hits = search_fn(q, top_k=8)
+            except Exception:
+                continue
+            for hit in hits:
+                content = (hit.get("content") or "").strip()
+                ck = _norm(content)[:240]
+                if not ck or ck in seen_content:
+                    continue
+                seen_content.add(ck)
+                if not _interurban_rag_content_usable(content):
+                    continue
+                score = float(hit.get("score") or 0)
+                cn = _norm(content)
+                if "senegal dem dikk" in cn:
+                    score += 0.8
+                if any(w in cn for w in ("lance", "2017", "interurbain", "ligne", "car", "mission", "confort")):
+                    score += 1.5
+                if score > best_score:
+                    best_score = score
+                    best = hit
+    if best and len((best.get("content") or "")) >= 100:
+        return _payload_from_rag_hit(best), f"rag score={float(best.get('score', 0)):.2f}"
+    return _payload_from_curated_interurban(_interurban_presentation_text()), "curated"
+
+
+def _interurban_rag_intent_bonus(q_norm: str, content: str) -> float:
+    """Favorise les extraits qui répondent vraiment à l'intention (ex. fidélité pour « avantages »)."""
+    cn = _norm(content)
+    bonus = 0.0
+    if any(m in q_norm for m in ("avantage", "avantages", "pourquoi")):
+        if any(w in cn for w in ("avantage", "fidel", "programme", "recompense", "points")):
+            bonus += 3.0
+        elif "confort" in cn:
+            bonus += 0.4
+    if any(
+        m in q_norm
+        for m in ("comment", "fonctionne", "fonctionnement", "explique", "c est quoi", "historique")
+    ):
+        if any(w in cn for w in ("lance", "2017", "interurbain", "senegal dem dikk", "ligne", "car", "mission")):
+            bonus += 2.0
+    return bonus
+
+
+def _interurban_rag_satisfies_intent(q_norm: str, content: str) -> bool:
+    cn = _norm(content)
+    if any(m in q_norm for m in ("avantage", "avantages", "pourquoi")):
+        return any(w in cn for w in ("avantage", "fidel", "programme", "recompense", "points", "confort"))
+    if any(m in q_norm for m in ("comment", "fonctionne", "fonctionnement", "explique")):
+        return any(
+            w in cn
+            for w in ("reserv", "billet", "depart", "gare", "appli", "horaire", "terminus", "tarif", "car")
+        )
+    return len(cn) >= 100
+
+
+def _gather_interurban_context_for_intent(question: str, q_norm: str, limit: int = 4) -> str:
+    """Plusieurs extraits index pour alimenter la reformulation LLM."""
+    extra_queries: list[str] = []
+    if any(m in q_norm for m in ("comment", "fonctionne", "fonctionnement", "explique")):
+        extra_queries.extend([
+            "Réservation Sénégal Dem Dikk application agence gare",
+            "Sénégal Dem Dikk départ Terminus Liberté 5 horaires",
+            "Sénégal Dem Dikk définition rôle cars interurbains lancé 2017",
+        ])
+    elif any(m in q_norm for m in ("avantage", "avantages", "pourquoi")):
+        extra_queries.extend([
+            "Sénégal Dem Dikk confort cars grand tourisme bagages",
+            "programme fidélité voyageurs Sénégal Dem Dikk avantages",
+            "Sénégal Dem Dikk lignes destinations couverture nationale",
+        ])
+    queries = _interurban_specific_search_queries(question, q_norm) + extra_queries
+    seen: set[str] = set()
+    parts: list[str] = []
+    for q in queries:
+        if len(parts) >= limit:
+            break
+        for search_fn in (_search, _keyword_search):
+            try:
+                hits = search_fn(q, top_k=6)
+            except Exception:
+                continue
+            for hit in hits:
+                content = (hit.get("content") or "").strip()
+                key = _norm(content)[:240]
+                if not key or key in seen or not _interurban_rag_content_usable(content):
+                    continue
+                seen.add(key)
+                parts.append(content)
+                if len(parts) >= limit:
+                    break
+            if len(parts) >= limit:
+                break
+    return "\n\n".join(parts)
+
+
+def _enrich_interurban_payload_with_context(payload: dict, question: str, q_norm: str) -> dict:
+    extra = _gather_interurban_context_for_intent(question, q_norm)
+    if not extra:
+        return payload
+    out = dict(payload)
+    base = (out.get("answer") or "").strip()
+    combined = f"{base}\n\n{extra}".strip() if base else extra
+    out["answer"] = combined
+    results = list(out.get("results") or [])
+    if results:
+        results[0] = dict(results[0])
+        results[0]["content"] = combined
+    else:
+        results = [{"content": combined, "title": out.get("summary") or "Sénégal Dem Dikk", "url": "https://demdikk.sn/reseau-interurbain/"}]
+    out["results"] = results
+    return out
+
+
+def _best_usable_interurban_rag_hit(question: str, q_norm: str) -> dict | None:
+    """Vectoriel + mots-clés : premier extrait substantiel (pas un simple libellé)."""
+    seen: set[str] = set()
+    best: dict | None = None
+    best_score = -1.0
+    search_fns = (_search, _keyword_search)
+    for q in _interurban_specific_search_queries(question, q_norm):
+        for search_fn in search_fns:
+            try:
+                hits = search_fn(q, top_k=10)
+            except Exception:
+                continue
+            for hit in hits:
+                content = (hit.get("content") or "").strip()
+                key = _norm(content)[:240]
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                if not _interurban_rag_content_usable(content):
+                    continue
+                score = float(hit.get("score") or 0)
+                cn = _norm(content)
+                if "senegal dem dikk" in cn:
+                    score += 0.6
+                score += _interurban_rag_intent_bonus(q_norm, content)
+                if score > best_score:
+                    best_score = score
+                    best = hit
+    return best
+
+
+def _payload_from_rag_hit(hit: dict) -> dict:
+    raw = (hit.get("content") or "").strip()
+    content = raw
+    if len(content) > 700:
+        content = content[:700].rsplit(" ", 1)[0] + "…"
+    title = hit.get("title") or "Dakar Dem Dikk"
+    url = hit.get("url") or "https://demdikk.sn/reseau-interurbain/"
+    if "agent-ia" in (title or "").lower() or title.strip().lower() == "dakar dem dikk":
+        first_line = next((ln.strip() for ln in raw.split("\n") if ln.strip()), "")
+        summary = (first_line[:120] if len(first_line) > 12 else "Réseau Sénégal Dem Dikk")
+    else:
+        summary = title[:120]
+    return {
+        "answer": content,
+        "summary": summary,
+        "sources": [{"title": summary, "url": url, "score": hit.get("score", 0)}],
+        "results": [
+            {"content": raw, "title": summary, "url": url}
+        ],
+        "query_type": "general",
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "needs_clarification": False,
+        "show_more_info": True,
+    }
+
+
+def _payload_from_curated_interurban(text: str) -> dict:
+    return {
+        "answer": text,
+        "summary": text[:120],
+        "sources": [{
+            "title": "Réseau Sénégal Dem Dikk",
+            "url": "https://demdikk.sn/reseau-interurbain/",
+            "score": 1.0,
+        }],
+        "results": [{"content": text, "title": "Réseau Sénégal Dem Dikk", "url": "https://demdikk.sn/reseau-interurbain/"}],
+        "query_type": "general",
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "needs_clarification": False,
+        "show_more_info": True,
+    }
+
+
+def _try_interurban_specific_answer(question: str, q_norm: str) -> tuple[dict | None, str]:
+    """FAQ chatbot-2303 puis RAG si la question interurbaine est précise."""
+    search_faq, faq_score_fn, faq_usable_fn = _interurban_overview_faq_helpers()
+    if callable(search_faq):
+        try:
+            fb = search_faq(question)
+            faq_score = faq_score_fn(fb) if callable(faq_score_fn) else 0.0
+            faq_ok = callable(faq_usable_fn) and faq_usable_fn(fb, question, q_norm)
+            if fb and faq_score >= _INTERURBAIN_OVERVIEW_FAQ_MIN_SCORE and faq_ok:
+                out = dict(fb)
+                out.setdefault("query_type", "general")
+                out.setdefault("show_more_info", True)
+                return out, f"faq score={faq_score:.2f}"
+        except Exception as exc:
+            _debug_interurban_overview(f"faq_error={exc!r}")
+
+    # « Avantages » : ancrage structuré (confort, couverture, fidélité…) + contexte index pour le LLM
+    if any(m in q_norm for m in ("avantage", "avantages", "pourquoi")):
+        payload = _payload_from_curated_interurban(_interurban_avantages_text())
+        payload = _enrich_interurban_payload_with_context(payload, question, q_norm)
+        return payload, "curated_avantages"
+
+    try:
+        hit = _best_usable_interurban_rag_hit(question, q_norm)
+        if hit:
+            payload = _payload_from_rag_hit(hit)
+            ans = payload.get("answer") or ""
+            if _interurban_rag_satisfies_intent(q_norm, ans):
+                payload = _enrich_interurban_payload_with_context(payload, question, q_norm)
+                return (
+                    payload,
+                    f"rag score={float(hit.get('score', 0)):.2f} title={hit.get('title', '')[:60]!r}",
+                )
+            _debug_interurban_overview("rag_hit_weak_intent")
+    except Exception as exc:
+        _debug_interurban_overview(f"rag_error={exc!r}")
+
+    curated = _interurban_curated_answer(q_norm)
+    if curated:
+        payload = _payload_from_curated_interurban(curated)
+        payload = _enrich_interurban_payload_with_context(payload, question, q_norm)
+        return payload, "curated"
+
+    return None, "no_hit"
+
+
+def _json_interurban_overview_payload(answer: str) -> dict:
     return {
         "answer": answer,
         "summary": answer[:200],
@@ -383,6 +869,31 @@ def _json_interurban_overview(question: str, q_norm: str) -> dict | None:
         "needs_clarification": False,
         "show_more_info": True,
     }
+
+
+def _json_interurban_overview(question: str, q_norm: str) -> dict | None:
+    if not _is_interurban_overview_query(q_norm, question):
+        return None
+
+    if _is_bare_senegal_dem_dikk_query(q_norm):
+        pres, reason = _try_interurban_presentation_answer(question, q_norm)
+        _debug_interurban_overview(f"route=presentation ({reason}) q={question!r}")
+        return pres
+
+    if _interurban_overview_has_specific_intent(q_norm):
+        specific, reason = _try_interurban_specific_answer(question, q_norm)
+        if specific:
+            _debug_interurban_overview(
+                f"route=specific ({reason}) q={question!r}"
+            )
+            return specific
+        _debug_interurban_overview(
+            f"route=overview_fallback (intent=yes, {reason}) q={question!r}"
+        )
+    else:
+        _debug_interurban_overview(f"route=overview (intent=no) q={question!r}")
+
+    return _json_interurban_overview_payload(_format_interurban_overview())
 
 _INTERURBAIN_RESERVATION = (
     "Pour réserver, rendez-vous en agence, dans nos gares routières ou via "
@@ -2432,6 +2943,11 @@ def ask():
                     })
         except Exception:
             pass
+
+    # « Que signifie SDD / DDD / ADD ? » — définition du sigle (pas liste destinations)
+    _acr_payload = _json_acronym_definition(question, q_norm)
+    if _acr_payload:
+        return jsonify(_acr_payload)
 
     # Réseau interurbain (vue d'ensemble) — réponse courte : intro + destinations
     _overview_payload = _json_interurban_overview(question, q_norm)
