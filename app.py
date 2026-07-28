@@ -2160,6 +2160,24 @@ def _search_chatbot_page_blocks(question: str) -> dict | None:
             "tour de contrôle",
             "tour de controle",
         )),
+        ("magal", (
+            "MAGAL EDITION 2026",
+            "grand Magal de Touba",
+            "Magal de Touba",
+        )),
+        ("tabaski", (
+            "Tabaski",
+            "offres spéciales de transport",
+        )),
+        ("gamou", (
+            "Gamou",
+            "Magal de Touba, Gamou",
+        )),
+        ("korite", (
+            "Korité",
+            "Korite",
+            "Magal de Touba, Gamou, Korité",
+        )),
     ]
     for key, markers in _topic_markers:
         if key in qn_raw:

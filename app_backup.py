@@ -573,6 +573,94 @@ def _try_faq_then_rag(question: str, q_norm: str) -> tuple[dict | None, str]:
     return None, "no_hit"
 
 
+# ── Événements / actualités — FAQ avant city_info (Magal, Tabaski, Gamou…) ──
+_EVENT_INTENT_MARKERS = (
+    "magal", "tabaski", "korite", "aid", "gamou", "fete", "edition",
+    "evenement", "dispositif special",
+)
+_RE_EVENT_YEAR_PAIR = re.compile(
+    r"\b(?:magal|tabaski|korite|aid|gamou|fete|edition|evenement|dispositif\s+special)\b"
+    r".{0,40}\b(20\d{2})\b"
+    r"|\b(20\d{2})\b.{0,40}\b(?:magal|tabaski|korite|aid|gamou|fete|edition|evenement|dispositif\s+special)\b",
+    re.I,
+)
+
+
+def _detect_event_intent(qn: str) -> str | None:
+    qn = (qn or "").strip()
+    if not qn:
+        return None
+    for marker in _EVENT_INTENT_MARKERS:
+        if marker in qn:
+            return marker
+    if _RE_EVENT_YEAR_PAIR.search(qn):
+        return "year+event"
+    return None
+
+
+def _debug_event_city_route(
+    event_term: str | None,
+    city_name: str | None,
+    source: str,
+    detail: str = "",
+) -> None:
+    if os.environ.get("FLASK_DEBUG", "1") == "1":
+        msg = (
+            f"[event_city] event={event_term or 'none'} "
+            f"city={city_name or 'none'} source={source}"
+        )
+        if detail:
+            msg += f" ({detail})"
+        print(msg)
+
+
+def _try_event_faq_only(question: str, q_norm: str) -> tuple[dict | None, str]:
+    """FAQ chatbot-2303 seule — même seuil que les autres triggers fixe."""
+    search_faq, faq_score_fn, faq_usable_fn = _interurban_overview_faq_helpers()
+    if not callable(search_faq):
+        return None, "no_faq_fn"
+    try:
+        fb = search_faq(question)
+        faq_score = faq_score_fn(fb) if callable(faq_score_fn) else 0.0
+        faq_ok = callable(faq_usable_fn) and faq_usable_fn(fb, question, q_norm)
+        if fb and faq_score >= _TRIGGER_FAQ_MIN_SCORE and faq_ok:
+            out = dict(fb)
+            out.setdefault("query_type", "general")
+            out.setdefault("show_more_info", True)
+            return out, f"score={faq_score:.2f}"
+        return None, f"score={faq_score:.2f} usable={faq_ok}"
+    except Exception as exc:
+        return None, f"error={exc!r}"
+
+
+def _try_event_faq_before_city_info(
+    question_raw: str,
+    q_norm_enriched: str,
+    city_hint: str = "",
+) -> dict | None:
+    """Question originale avec terme d'événement → FAQ prioritaire sur city_info."""
+    qn_orig = _norm(question_raw)
+    event_term = _detect_event_intent(qn_orig)
+    if not event_term:
+        return None
+    city_section = (
+        (get_section_by_ville(city_hint) if city_hint else None)
+        or _detect_city(q_norm_enriched)
+        or _detect_city(qn_orig)
+    )
+    city_name = None
+    if city_section:
+        city_name = city_hint or _ville_key_from_query(q_norm_enriched, city_section)
+        if not city_name:
+            city_name = _ville_key_from_query(qn_orig, city_section)
+    faq_payload, reason = _try_event_faq_only(question_raw.strip(), qn_orig)
+    if faq_payload:
+        _debug_event_city_route(event_term, city_name, "FAQ", reason)
+        return faq_payload
+    _debug_event_city_route(event_term, city_name, "city_info", f"fallback {reason}")
+    return None
+
+
 # ── TRIGGER 1 : AIBD / navette ──
 # Bloc wrapper : app.py ~2739-2744 (_aibd_triggers → _fallback_from_site forcé)
 _AIBD_TRIGGERS = ("aibd", "aeroport", "navette", "blaise diagne", "blaise-diagne")
@@ -3222,6 +3310,9 @@ def _enrich_short_question_from_history(question: str, history_raw) -> str:
     # Nouveau sujet (location, pub, colis…) → ne jamais enrichir avec l'historique
     if _is_standalone_service_question(qn_check, q):
         return q
+    # Événement / actualité (Magal, Tabaski…) → sujet FAQ autonome, pas la ville précédente
+    if _detect_event_intent(qn_check):
+        return q
     # Nom de la société seul → jamais enrichi comme suite de conversation
     if qn_check in _COMPANY_NAME_TOKENS or all(
         t in _COMPANY_NAME_TOKENS or t in _ENRICH_STOPWORDS
@@ -3476,6 +3567,11 @@ def ask():
     _service_payload = _json_service_payload(question, q_norm)
     if _service_payload:
         return jsonify(_service_payload)
+
+    # Événement / actualité sur question originale — FAQ avant city_info
+    _event_faq_payload = _try_event_faq_before_city_info(question_raw, q_norm, city_hint)
+    if _event_faq_payload:
+        return jsonify(_event_faq_payload)
 
     # Ville interurbaine — sauf si intention voyage explicite ou ville seule
     _city_payload = _json_interurban_city(question, q_norm, city_hint)
