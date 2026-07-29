@@ -1082,6 +1082,1349 @@ def _try_tek_dem_specific_answer(question: str, q_norm: str) -> tuple[dict | Non
     return None, "no_hit"
 
 
+# ── TRIGGER 4 : Application mobile ──
+# Blocs : app.py ~2875+ (wrapper application / appli / play store)
+_APP_CORE_TRIGGERS = (
+    "application", "appli", "google play", "app store", "play store",
+)
+_APP_INTENT_MARKERS = (
+    "telecharg", "download", "installer", "disponib", "play store", "app store",
+    "google play", "fonctionnal", "reserv", "reserver", "modifier", "modification",
+    "billet", "booking", "comment", "ou ", "combien", "payer", "bug", "erreur",
+    "marche pas", "fonctionne", "android", "iphone", "ios", "mobile", "store",
+    "cgu", "compte", "connecter", "connexion", "acheter", "ticket",
+)
+
+
+def _matches_app_trigger(qn: str) -> str | None:
+    qn = (qn or "").strip()
+    if not qn:
+        return None
+    for t in _APP_CORE_TRIGGERS:
+        if t in qn:
+            return t
+    if "dem dikk" in qn and any(w in qn for w in ("mobile", "smartphone", "telephone")):
+        return "dem dikk mobile"
+    return None
+
+
+def _app_has_specific_intent(qn: str) -> bool:
+    return any(m in (qn or "") for m in _APP_INTENT_MARKERS)
+
+
+def _app_reservation_intent(q_norm: str) -> bool:
+    return any(m in q_norm for m in ("reserv", "reserver", "modifier", "modification", "billet", "booking"))
+
+
+def _app_download_intent(q_norm: str) -> bool:
+    return any(m in q_norm for m in (
+        "telecharg", "download", "installer", "disponib", "play store", "app store",
+        "google play", "android", "iphone", "ios", "store",
+    ))
+
+
+def _app_features_intent(q_norm: str) -> bool:
+    return any(m in q_norm for m in ("fonctionnal", "faire", "utiliser", "sert", "sert a"))
+
+
+def _app_specific_search_queries(question: str, q_norm: str) -> list[str]:
+    queries = [question]
+    if _app_download_intent(q_norm):
+        queries.extend([
+            "Disponibilité application mobile Dem Dikk Google Play App Store",
+            "télécharger application Dem Dikk",
+        ])
+    elif _app_reservation_intent(q_norm):
+        queries.extend([
+            "Réservation application mobile Dem Dikk",
+            "modifier billet application Dem Dikk",
+        ])
+    elif _app_features_intent(q_norm):
+        queries.append("Fonctionnalités application mobile Dem Dikk")
+    seen: set[str] = set()
+    out: list[str] = []
+    for q in queries:
+        key = _norm(q)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(q)
+    return out
+
+
+def _app_answer_too_weak(answer: str) -> bool:
+    ans = (answer or "").strip()
+    if not ans or len(ans) < 80:
+        return True
+    if ans.startswith(":"):
+        return True
+    if len(ans) < 120 and ans.isupper():
+        return True
+    lines = [ln.strip() for ln in ans.splitlines() if ln.strip()]
+    if len(lines) == 1:
+        lone = _norm(lines[0])
+        if lone in ("application mobile", "app store", "google play store", "application"):
+            return True
+        if lines[0].isupper() and len(lines[0]) < 40:
+            return True
+    if ans.rstrip().endswith(":") and len(ans) < 50:
+        return True
+    return False
+
+
+def _app_answer_satisfies_intent(q_norm: str, answer: str) -> bool:
+    an = _norm(answer)
+    if not an or len(an) < 30:
+        return False
+    if _app_answer_too_weak(answer):
+        return False
+    appish = any(w in an for w in (
+        "application", "appli", "mobile", "play store", "app store", "google play",
+        "dem dikk", "booking",
+    ))
+    if not appish and not _app_reservation_intent(q_norm):
+        return False
+    if _app_download_intent(q_norm):
+        return any(w in an for w in (
+            "play store", "app store", "google play", "telecharg", "disponib", "iphone", "android",
+        ))
+    if _app_reservation_intent(q_norm):
+        q_app = any(w in q_norm for w in ("appli", "application", "mobile", "booking"))
+        if q_app:
+            return any(w in an for w in ("application", "appli", "booking", "play store", "app store")) and any(
+                w in an for w in ("reserv", "billet", "modifier")
+            )
+        return any(w in an for w in ("reserv", "billet", "application", "agence", "824"))
+    if _app_features_intent(q_norm):
+        return any(w in an for w in ("fonctionnal", "reserv", "geolocal", "billet", "application"))
+    return appish and len(an) >= 40
+
+
+def _app_rag_hit_usable(q_norm: str, hit: dict) -> bool:
+    content = (hit.get("content") or "").strip()
+    if not _trigger_rag_content_usable(content):
+        return False
+    return _app_answer_satisfies_intent(q_norm, content)
+
+
+_APP_PRESENTATION = (
+    "L'application mobile Dem Dikk permet de consulter les horaires, réserver et gérer "
+    "vos billets (réseau urbain et interurbain selon les fonctionnalités disponibles). "
+    "Elle est disponible sur Google Play (Android) et l'App Store (iPhone). "
+    "Réservation aussi via booking.demdikk.sn, en agence ou au +221 33 824 10 10."
+)
+
+
+def _app_fixe_payload(fb: dict | None) -> dict | None:
+    """Synthèse courte si l'extrait FAQ est trop court ou mal découpé."""
+    fixe = {
+        "answer": _APP_PRESENTATION,
+        "summary": "Application mobile Dem Dikk",
+        "sources": [{"title": "Chatbot Dakar Dem Dikk", "url": "https://demdikk.sn/chatbot-2303/", "score": 1.0}],
+        "results": [],
+        "query_type": "general",
+        "needs_clarification": False,
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "show_more_info": True,
+    }
+    if not fb:
+        return fixe
+    ans = (fb.get("answer") or "").strip()
+    if _app_answer_too_weak(ans):
+        return {**fb, **fixe}
+    return fb
+
+
+def _app_clip_answer_for_intent(q_norm: str, answer: str) -> str:
+    text = (answer or "").strip()
+    if not text:
+        return text
+    if _app_reservation_intent(q_norm):
+        for marker in ("RÉSEAU URBAIN", "RESEAU URBAIN", "Réseau urbain", "R�SEAU URBAIN"):
+            idx = text.find(marker)
+            if idx > 40:
+                return text[:idx].strip()
+    if _app_features_intent(q_norm):
+        for marker in ("PROGRAMME", "Programme", "INFORMATIONS TECHNIQUES"):
+            idx = text.find(marker)
+            if idx > 40:
+                return text[:idx].strip()
+    return text
+
+
+def _try_app_specific_answer(question: str, q_norm: str) -> tuple[dict | None, str]:
+    search_faq, faq_score_fn, faq_usable_fn = _interurban_overview_faq_helpers()
+    try:
+        import sys as _sys
+        app_mod = _sys.modules.get("app")
+        fetch = getattr(app_mod, "_fetch_page_text", None) if app_mod else None
+        extract = getattr(app_mod, "_extract_section_priority", None) if app_mod else None
+        make = getattr(app_mod, "_make_chatbot_result", None) if app_mod else None
+        if callable(fetch) and callable(extract) and callable(make):
+            page = fetch("https://demdikk.sn/chatbot-2303/")
+            if _app_reservation_intent(q_norm):
+                section = extract(
+                    page or "",
+                    (
+                        "Vous pouvez réserver",
+                        "Via l'application Dem Dikk",
+                        "Réservation et modification",
+                    ),
+                    max_chars=700,
+                )
+                if section and _app_answer_satisfies_intent(q_norm, section):
+                    section = _app_clip_answer_for_intent(q_norm, section)
+                    out = make(section)
+                    out.setdefault("query_type", "general")
+                    out.setdefault("show_more_info", True)
+                    return out, "faq_extract_reservation"
+            if _app_features_intent(q_norm):
+                section = extract(
+                    page or "",
+                    (
+                        "Fonctionnalités de l'application mobile Dem Dikk",
+                        "Fonctionnalités de l'application mobile",
+                    ),
+                    max_chars=900,
+                )
+                if section and _app_answer_satisfies_intent(q_norm, section):
+                    section = _app_clip_answer_for_intent(q_norm, section)
+                    out = make(section)
+                    out.setdefault("query_type", "general")
+                    out.setdefault("show_more_info", True)
+                    return out, "faq_extract_fonctionnalites"
+            if _app_download_intent(q_norm):
+                section = extract(
+                    page or "",
+                    (
+                        "Disponibilité de l'application mobile Dem Dikk",
+                        "Disponibilité de l'application mobile",
+                        "Google Play Store",
+                    ),
+                    max_chars=700,
+                )
+                if section and _app_answer_satisfies_intent(q_norm, section):
+                    section = _app_clip_answer_for_intent(q_norm, section)
+                    out = make(section)
+                    out.setdefault("query_type", "general")
+                    out.setdefault("show_more_info", True)
+                    return out, "faq_extract_disponibilite"
+    except Exception:
+        pass
+    if callable(search_faq):
+        for q in _app_specific_search_queries(question, q_norm):
+            try:
+                fb = search_faq(q)
+                faq_score = faq_score_fn(fb) if callable(faq_score_fn) else 0.0
+                faq_ok = callable(faq_usable_fn) and faq_usable_fn(fb, question, q_norm)
+                ans = (fb or {}).get("answer") or ""
+                if (
+                    fb
+                    and faq_score >= _TRIGGER_FAQ_MIN_SCORE
+                    and faq_ok
+                    and _app_answer_satisfies_intent(q_norm, ans)
+                ):
+                    out = dict(fb)
+                    clipped = _app_clip_answer_for_intent(q_norm, ans)
+                    if clipped != ans:
+                        out["answer"] = clipped
+                        out["summary"] = clipped[:200]
+                    out.setdefault("query_type", "general")
+                    out.setdefault("show_more_info", True)
+                    return out, f"faq score={faq_score:.2f}"
+            except Exception:
+                continue
+    try:
+        best: dict | None = None
+        best_score = -1.0
+        seen: set[str] = set()
+        for q in _app_specific_search_queries(question, q_norm):
+            for hit in (_search(q, top_k=8) or []):
+                content = (hit.get("content") or "").strip()
+                key = _norm(content)[:240]
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                if not _app_rag_hit_usable(q_norm, hit):
+                    continue
+                score = float(hit.get("score") or 0)
+                if score > best_score:
+                    best_score = score
+                    best = hit
+        if best and best_score >= _TRIGGER_RAG_MIN_SCORE:
+            out = _payload_from_rag_hit(best)
+            out.setdefault("query_type", "general")
+            out.setdefault("show_more_info", True)
+            return out, f"rag score={best_score:.2f} title={(best.get('title') or '')[:50]!r}"
+    except Exception as exc:
+        return None, f"rag_error={exc!r}"
+    return None, "no_hit"
+
+
+# ── TRIGGER 5 : Afrique Dem Dikk (ADD / Gambie / Banjul) ──
+# Blocs : app.py ~2856+ (wrapper afrique / gambie / banjul)
+_AFRIQUE_CORE_TRIGGERS = (
+    "afrique dem dikk", "gambie", "gambia", "banjul",
+)
+_AFRIQUE_INTENT_MARKERS = (
+    "horaire", "heure", "depart", "frequence", "tarif", "prix", "combien",
+    "comment", "ou ", "reserv", "billet", "contact", "telephone", "duree",
+    "trajet", "aller", "partir", "point de depart", "colobane", "kanifing",
+    "international", "frontiere", "taxe", "visa", "douane",
+)
+_AFRIQUE_BARE_QUERIES = frozenset({
+    "afrique dem dikk", "afrique demdikk", "add",
+})
+_AFRIQUE_SHORT_PRESENTATION = (
+    "Afrique Dem Dikk (ADD) est le réseau international de Dakar Dem Dikk. "
+    "Il assure des liaisons transfrontalières, notamment Dakar–Banjul (Gambie). "
+    "Départs Dakar → Banjul : 7h00 et 9h00 ; Banjul → Dakar : 7h30 et 10h00. "
+    "Réservation : application Dem Dikk, agence ou +221 33 824 10 10."
+)
+_AFRIQUE_BANJUL_PRICE = (
+    "Pour la liaison Dakar-Banjul (Gambie), le tarif de référence est généralement de 12 000 FCFA."
+)
+
+
+def _matches_afrique_trigger(qn: str) -> str | None:
+    qn = (qn or "").strip()
+    if not qn or _is_acronym_definition_query(qn):
+        return None
+    if "afrique dem dikk" in qn:
+        return "afrique dem dikk"
+    for t in ("gambie", "gambia", "banjul"):
+        if t in qn:
+            return t
+    if qn in _AFRIQUE_BARE_QUERIES:
+        return "add"
+    if "senegal" in qn and any(w in qn for w in ("banjul", "gambie", "gambia")):
+        return "senegal banjul"
+    return None
+
+
+def _afrique_has_specific_intent(qn: str) -> bool:
+    return any(m in (qn or "") for m in _AFRIQUE_INTENT_MARKERS)
+
+
+def _is_bare_afrique_query(qn: str) -> bool:
+    qn = (qn or "").strip()
+    if _afrique_has_specific_intent(qn):
+        return False
+    if qn in _AFRIQUE_BARE_QUERIES:
+        return True
+    if qn in ("banjul", "gambie", "gambia"):
+        return True
+    if qn == "afrique dem dikk":
+        return True
+    return False
+
+
+def _afrique_price_intent(q_norm: str) -> bool:
+    return any(m in q_norm for m in ("tarif", "prix", "combien", "coute", "cout", "fcfa"))
+
+
+def _afrique_horaire_intent(q_norm: str) -> bool:
+    return any(m in q_norm for m in ("horaire", "heure", "depart", "frequence", "quand"))
+
+
+def _afrique_specific_search_queries(question: str, q_norm: str) -> list[str]:
+    queries = [question]
+    queries.append("Afrique Dem Dikk ADD Gambie Banjul horaires tarifs")
+    if _afrique_horaire_intent(q_norm):
+        queries.extend([
+            "Afrique Dem Dikk Dakar Banjul horaires départs",
+            "ADD Gambie départs 7h00 9h00",
+        ])
+    elif _afrique_price_intent(q_norm):
+        queries.extend([
+            "tarif Dakar Banjul Afrique Dem Dikk FCFA",
+            "ADD tarification internationale Gambie",
+        ])
+    elif any(m in q_norm for m in ("comment", "aller", "trajet", "partir")):
+        queries.append("comment aller à Banjul Gambie Afrique Dem Dikk")
+    seen: set[str] = set()
+    out: list[str] = []
+    for q in queries:
+        key = _norm(q)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(q)
+    return out
+
+
+def _afrique_answer_satisfies_intent(q_norm: str, answer: str) -> bool:
+    an = _norm(answer)
+    if not an or len(an) < 25:
+        return False
+    addish = any(w in an for w in (
+        "afrique dem dikk", "add", "banjul", "gambie", "international",
+    ))
+    if not addish:
+        return False
+    if "fess dem" in an and "banjul" not in an:
+        return False
+    if "tek dem" in an and "banjul" not in an:
+        return False
+    if _afrique_price_intent(q_norm):
+        return any(w in an for w in ("fcfa", "000", "12 000", "12000"))
+    if _afrique_horaire_intent(q_norm):
+        return (
+            any(w in an for w in ("horaire", "heure", "depart", "7h", "9h", "10h"))
+            or "banjul" in an
+        )
+    if any(m in q_norm for m in ("contact", "telephone")):
+        return "+221" in answer or "824" in an
+    return len(an) >= 40
+
+
+def _afrique_rag_hit_usable(q_norm: str, hit: dict) -> bool:
+    content = (hit.get("content") or "").strip()
+    if not _trigger_rag_content_usable(content):
+        return False
+    cn = _norm(content)
+    if "senegal dem dikk" in cn and "banjul" not in cn and "gambie" not in cn:
+        return False
+    return _afrique_answer_satisfies_intent(q_norm, content)
+
+
+def _afrique_clip_answer(q_norm: str, answer: str) -> str:
+    text = (answer or "").strip()
+    if not text:
+        return text
+    if _afrique_horaire_intent(q_norm) and not _afrique_price_intent(q_norm):
+        for marker in ("Tarification", "Les tarifs internationaux", "Nos tarifs"):
+            idx = text.find(marker)
+            if idx > 40:
+                return text[:idx].strip()
+    if _afrique_price_intent(q_norm):
+        for marker in (
+            "OFFRES PROMOTIONNELLES", "Programmes sociaux", "Dispositifs événementiels",
+            "Dispositifs evenementiels",
+        ):
+            idx = text.find(marker)
+            if idx > 0:
+                return text[:idx].strip()
+    for marker in (
+        "Réseau Fess Dem", "RESEAU FESS DEM", "Fess Dem",
+        "Sénégal Dem Dikk", "SENEGAL DEM DIKK",
+        "OFFRES PROMOTIONNELLES", "PROGRAMME",
+        "INFORMATIONS TECHNIQUES",
+    ):
+        idx = text.find(marker)
+        if idx > 80:
+            return text[:idx].strip()
+    return text
+
+
+def _afrique_fixe_payload(fb: dict | None = None) -> dict:
+    url = "https://demdikk.sn/reseau-international/"
+    if fb and (fb.get("answer") or "").strip() and len((fb.get("answer") or "").strip()) >= 80:
+        ans = _afrique_clip_answer("", fb["answer"])
+        return {
+            **fb,
+            "answer": ans,
+            "summary": ans[:280],
+            "query_type": "general",
+            "show_more_info": True,
+        }
+    return {
+        "answer": _AFRIQUE_SHORT_PRESENTATION,
+        "summary": "Afrique Dem Dikk (ADD)",
+        "bullets": [],
+        "sources": [{"title": "Afrique Dem Dikk – DDD", "url": url, "score": 1.0}],
+        "results": [],
+        "query_type": "general",
+        "needs_clarification": False,
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "show_more_info": True,
+    }
+
+
+def _try_afrique_specific_answer(question: str, q_norm: str) -> tuple[dict | None, str]:
+    search_faq, faq_score_fn, faq_usable_fn = _interurban_overview_faq_helpers()
+    try:
+        import sys as _sys
+        app_mod = _sys.modules.get("app")
+        fetch = getattr(app_mod, "_fetch_page_text", None) if app_mod else None
+        extract = getattr(app_mod, "_extract_section_priority", None) if app_mod else None
+        make = getattr(app_mod, "_make_chatbot_result", None) if app_mod else None
+        if callable(fetch) and callable(extract) and callable(make):
+            page = fetch("https://demdikk.sn/chatbot-2303/")
+            if _afrique_price_intent(q_norm):
+                price_sec = extract(
+                    page or "",
+                    ("Dakar-Banjul", "Dakar Banjul", "12 000 FCFA", "12000"),
+                    max_chars=500,
+                )
+                pn = _norm(price_sec or "")
+                if price_sec and ("12000" in pn.replace(" ", "") or "12 000" in price_sec):
+                    out = {
+                        "answer": _AFRIQUE_BANJUL_PRICE,
+                        "summary": _AFRIQUE_BANJUL_PRICE,
+                        "sources": [{"title": "Chatbot Dakar Dem Dikk", "url": "https://demdikk.sn/chatbot-2303/", "score": 0.95}],
+                        "results": [],
+                        "query_type": "general",
+                        "show_more_info": True,
+                    }
+                    return out, "faq_extract_tarif"
+            section = extract(
+                page or "",
+                (
+                    "AFRIQUE DEM DIKK (INTERNATIONAL)",
+                    "Afrique Dem Dikk (ADD)",
+                    "AFRIQUE DEM DIKK",
+                    "Dakar -> Banjul",
+                ),
+                max_chars=1200,
+            )
+            if section and _afrique_answer_satisfies_intent(q_norm, section):
+                section = _afrique_clip_answer(q_norm, section)
+                out = make(section)
+                out.setdefault("query_type", "general")
+                out.setdefault("show_more_info", True)
+                return out, "faq_extract_add"
+    except Exception:
+        pass
+    if callable(search_faq):
+        for q in _afrique_specific_search_queries(question, q_norm):
+            try:
+                fb = search_faq(q)
+                faq_score = faq_score_fn(fb) if callable(faq_score_fn) else 0.0
+                faq_ok = callable(faq_usable_fn) and faq_usable_fn(fb, question, q_norm)
+                ans = (fb or {}).get("answer") or ""
+                if (
+                    fb
+                    and faq_score >= _TRIGGER_FAQ_MIN_SCORE
+                    and faq_ok
+                    and _afrique_answer_satisfies_intent(q_norm, ans)
+                ):
+                    out = dict(fb)
+                    clipped = _afrique_clip_answer(q_norm, ans)
+                    if clipped != ans:
+                        out["answer"] = clipped
+                        out["summary"] = clipped[:200]
+                    out.setdefault("query_type", "general")
+                    out.setdefault("show_more_info", True)
+                    return out, f"faq score={faq_score:.2f}"
+            except Exception:
+                continue
+    try:
+        best: dict | None = None
+        best_score = -1.0
+        seen: set[str] = set()
+        for q in _afrique_specific_search_queries(question, q_norm):
+            for hit in (_search(q, top_k=8) or []):
+                content = (hit.get("content") or "").strip()
+                key = _norm(content)[:240]
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                if not _afrique_rag_hit_usable(q_norm, hit):
+                    continue
+                score = float(hit.get("score") or 0)
+                if score > best_score:
+                    best_score = score
+                    best = hit
+        if best and best_score >= _TRIGGER_RAG_MIN_SCORE:
+            out = _payload_from_rag_hit(best)
+            clipped = _afrique_clip_answer(q_norm, out.get("answer") or "")
+            if clipped != (out.get("answer") or ""):
+                out["answer"] = clipped
+                out["summary"] = clipped[:200]
+            out.setdefault("query_type", "general")
+            out.setdefault("show_more_info", True)
+            return out, f"rag score={best_score:.2f} title={(best.get('title') or '')[:50]!r}"
+    except Exception as exc:
+        return None, f"rag_error={exc!r}"
+    return None, "no_hit"
+
+
+# ── TRIGGER 6 : Présentation société (DDD) ──
+# Blocs : app.py ~2783 (early), ~3046+ (wrapper post-backup)
+_PRESENTATION_EXCLUDE_HINTS = (
+    "cco", "centre de controle", "tour de controle",
+    "bagage", "remboursement", "annulation", "report", "reservation",
+    "colis", "messagerie", "tek dem", "carte", "pass", "geolocalisation",
+    "perturbation", "ligne", "horaire", "tarif", "billet", "navette",
+    "aibd", "interurbain", "senegal dem dikk", "louer un bus", "location",
+    "publicite", "partenariat", "magal", "tabaski", "gamou",
+)
+_PRESENTATION_CORE_TRIGGERS = (
+    "directeur", "directeurs", " dg ", "pdg",
+    "predecesseur", "predécesseur", "successeur", "successeurs",
+    "qui etait", "qui était", "avant lui", "avant elle",
+    "presentation", "historique", "histoire", "creation", "création",
+    "recrutement", "emploi", "candidature",
+    "actionnariat", "actionnaire", "fondateur", "capital social",
+    "conseil d'administration",
+    "assane", "mbengue", "thierno", "ousmane sylla",
+    "christian salvy", "moussa diagne", "dame diop",
+    "moussa diop", "omar sylla", "mamadou goudiaby",
+)
+_PRESENTATION_INTENT_MARKERS = (
+    "directeur", "directeurs", " dg", "pdg", "predecesseur", "successeur",
+    "qui etait", "qui est", "nomme", "nommé", "actuel",
+    "recrutement", "emploi", "candidature", "poste", "offre",
+    "actionnariat", "actionnaire", "capital", "fondateur", "conseil",
+    "mission", "vision", "valeurs", "objectif", "histoire", "creation",
+    "assane", "mbengue", "thierno", "sylla", "salvy", "diagne", "diop", "goudiaby",
+)
+_PRESENTATION_BARE_QUERIES = frozenset({
+    "dakar dem dikk", "dem dikk", "demdikk", "ddd",
+    "dakar dem-dikk", "dakar demdikk", "presentation", "présentation",
+})
+_PRESENTATION_SHORT = (
+    "Dakar Dem Dikk (DDD) est l'opérateur public de transport en commun au Sénégal. "
+    "Créée en janvier 2001, elle gère le réseau urbain de Dakar et sa banlieue, "
+    "le réseau interurbain Sénégal Dem Dikk, les navettes AIBD et les liaisons Afrique Dem Dikk. "
+    "Assistance : +221 33 824 10 10."
+)
+_PRESENTATION_RECRUTEMENT = (
+    "Pour postuler chez Dakar Dem Dikk, consultez les offres d'emploi sur www.jobs.demdikk.sn. "
+    "Pour toute question RH ou candidature spontanée : rh@demdikk.sn."
+)
+_PRESENTATION_MISSION_FALLBACK = (
+    "Vision : offrir un service public de transport moderne et adapté aux exigences de mobilité "
+    "actuelles et futures.\n\n"
+    "Mission : transporter les personnes et les biens partout au Sénégal et dans la sous-région "
+    "avec des moyens sécurisés et confortables."
+)
+_PRESENTATION_MARKERS = (
+    "c est quoi ddd", "qu est ce que ddd", "quest ce que ddd",
+    "parle moi de dem dikk", "parlez moi de dem dikk",
+    "histoire de ddd", "histoire de dem dikk",
+    "connaitre ddd", "connaître ddd", "entreprise dem dikk",
+    "societe dem dikk", "société dem dikk",
+)
+
+
+def _is_bare_presentation_query(qn: str) -> bool:
+    qn = (qn or "").strip()
+    if not qn:
+        return False
+    if any(m in qn for m in _PRESENTATION_INTENT_MARKERS):
+        return False
+    if qn in _PRESENTATION_BARE_QUERIES:
+        return True
+    if qn.replace(" ", "") in {"demdikk", "ddd"}:
+        return True
+    tokens = [t for t in qn.split() if t not in ("de", "la", "le", "les", "du", "des", "sur", "a", "au")]
+    if tokens and all(t in {"dakar", "dem", "dikk", "demdikk", "ddd"} for t in tokens):
+        return True
+    if any(m in qn for m in _PRESENTATION_MARKERS):
+        return True
+    return False
+
+
+def _matches_presentation_trigger(qn: str) -> str | None:
+    qn = (qn or "").strip()
+    if not qn or _is_acronym_definition_query(qn):
+        return None
+    if any(h in qn for h in _PRESENTATION_EXCLUDE_HINTS):
+        return None
+    if _is_bare_presentation_query(qn):
+        return "company_name"
+    for t in _PRESENTATION_CORE_TRIGGERS:
+        if t in qn:
+            return t.strip() or t
+    for m in _PRESENTATION_MARKERS:
+        if m in qn:
+            return "presentation"
+    if any(m in qn for m in ("mission", "vision", "valeurs", "objectif")) and any(
+        b in qn for b in ("dem dikk", "demdikk", "ddd", "dakar dem")
+    ):
+        return "mission"
+    return None
+
+
+def _presentation_has_specific_intent(qn: str) -> bool:
+    if _is_bare_presentation_query(qn):
+        return False
+    return any(m in (qn or "") for m in _PRESENTATION_INTENT_MARKERS)
+
+
+def _presentation_recruitment_intent(q_norm: str) -> bool:
+    return any(m in q_norm for m in ("recrutement", "emploi", "candidature", "postuler"))
+
+
+def _presentation_mission_intent(q_norm: str) -> bool:
+    return any(m in q_norm for m in ("mission", "vision", "valeurs", "objectif"))
+
+
+def _presentation_recruitment_answer_too_weak(answer: str) -> bool:
+    ans = (answer or "").strip()
+    if len(ans) < 80:
+        return True
+    an = _norm(ans)
+    if "jobs.demdikk" in an and len(ans) < 120:
+        return True
+    return False
+
+
+def _presentation_director_intent(q_norm: str) -> bool:
+    return any(m in q_norm for m in (
+        "directeur", "directeurs", "dg", "pdg", "predecesseur", "successeur",
+        "assane", "mbengue", "thierno", "sylla", "qui etait", "qui est",
+    ))
+
+
+def _presentation_wants_current_dg_only(q_norm: str) -> bool:
+    qn = (q_norm or "").strip()
+    if not _presentation_director_intent(qn):
+        return False
+    if any(m in qn for m in ("predecesseur", "succede", "succession", "historique", "liste", "tous")):
+        return False
+    return any(m in qn for m in ("qui est", "actuel", "nomme", "nomme", "aujourd"))
+
+
+_PRESENTATION_DG_CURRENT = (
+    "Le Directeur général actuel de Dakar Dem Dikk est M. Assane MBENGUE "
+    "(nomination : 2 mai 2024). "
+    "Depuis la création de l'entreprise en janvier 2001, six directeurs généraux se sont succédés "
+    "(Christian SALVY, Moussa DIAGNE, Dame DIOP, Moussa DIOP, Omar Bounkhatab SYLLA, Ousmane SYLLA, "
+    "puis Assane MBENGUE)."
+)
+
+
+def _presentation_directors_payload(section: str | None = None) -> dict:
+    url = "https://demdikk.sn/presentation/"
+    if section and len(section.strip()) >= 80:
+        try:
+            import sys as _sys
+            app_mod = _sys.modules.get("app")
+            make = getattr(app_mod, "_make_chatbot_result", None) if app_mod else None
+            if callable(make):
+                out = make(section)
+                out.setdefault("query_type", "general")
+                out.setdefault("show_more_info", True)
+                out["sources"] = [{"title": "Présentation – Dakar Dem Dikk", "url": url, "score": 0.95}]
+                return out
+        except Exception:
+            pass
+    return {
+        "answer": _PRESENTATION_DG_CURRENT,
+        "summary": "Directeur général – Dakar Dem Dikk",
+        "sources": [{"title": "Présentation – Dakar Dem Dikk", "url": url, "score": 1.0}],
+        "results": [],
+        "query_type": "general",
+        "needs_clarification": False,
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "show_more_info": True,
+    }
+
+
+def _try_presentation_directors_extract() -> dict | None:
+    try:
+        import sys as _sys
+        app_mod = _sys.modules.get("app")
+        fetch = getattr(app_mod, "_fetch_page_text", None) if app_mod else None
+        extract = getattr(app_mod, "_extract_section_priority", None) if app_mod else None
+        if not (callable(fetch) and callable(extract)):
+            return None
+        page = fetch("https://demdikk.sn/presentation/")
+        if not page:
+            return None
+        section = extract(
+            page,
+            ("DIRECTEURS GENERAUX", "Directeurs generaux", "Directeurs généraux", "DIRECTEURS"),
+            max_chars=900,
+        )
+        if section and len(section.strip()) >= 80:
+            return _presentation_directors_payload(section)
+    except Exception:
+        pass
+    return None
+
+
+def _presentation_specific_search_queries(question: str, q_norm: str) -> list[str]:
+    queries = [question]
+    if _presentation_recruitment_intent(q_norm):
+        queries.extend(["recrutement Dakar Dem Dikk offres emploi", "Recrutement Dem Dikk"])
+    elif _presentation_director_intent(q_norm):
+        queries.extend([
+            "directeur général Dakar Dem Dikk Assane Mbengue Thierno Ousmane Sylla",
+            "direction Dakar Dem Dikk",
+        ])
+    elif any(m in q_norm for m in ("mission", "vision", "valeurs", "histoire", "creation")):
+        queries.append("mission vision valeurs Dakar Dem Dikk histoire")
+    seen: set[str] = set()
+    out: list[str] = []
+    for q in queries:
+        key = _norm(q)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(q)
+    return out
+
+
+def _presentation_answer_satisfies_intent(q_norm: str, answer: str) -> bool:
+    an = _norm(answer)
+    if not an or len(an) < 40:
+        return False
+    if _presentation_recruitment_intent(q_norm):
+        if _presentation_recruitment_answer_too_weak(answer):
+            return False
+        return any(w in an for w in ("recrutement", "emploi", "candidature", "poste", "offre", "jobs"))
+    if _presentation_mission_intent(q_norm):
+        return any(w in an for w in ("mission", "vision", "valeurs", "transport", "mobilite"))
+    if _presentation_director_intent(q_norm):
+        return any(w in an for w in ("directeur", "dg", "assane", "mbengue", "thierno", "sylla", "direction"))
+    if any(w in an for w in ("agent-ia", "guide complet des services")):
+        return False
+    return any(w in an for w in ("dem dikk", "ddd", "dakar dem", "transport", "senegal"))
+
+
+def _presentation_rag_hit_usable(q_norm: str, hit: dict) -> bool:
+    content = (hit.get("content") or "").strip()
+    if not _trigger_rag_content_usable(content):
+        return False
+    return _presentation_answer_satisfies_intent(q_norm, content)
+
+
+def _presentation_fixe_payload(fb: dict | None = None) -> dict:
+    url = "https://demdikk.sn/presentation/"
+    if fb and (fb.get("answer") or "").strip() and len((fb.get("answer") or "").strip()) >= 80:
+        ans = (fb.get("answer") or "").strip()
+        return {
+            **fb,
+            "answer": ans,
+            "summary": ans[:280],
+            "query_type": "general",
+            "show_more_info": True,
+        }
+    return {
+        "answer": _PRESENTATION_SHORT,
+        "summary": "Dakar Dem Dikk (DDD)",
+        "sources": [{"title": "Présentation – Dakar Dem Dikk", "url": url, "score": 1.0}],
+        "results": [],
+        "query_type": "general",
+        "needs_clarification": False,
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "show_more_info": True,
+    }
+
+
+def _try_presentation_mission_extract() -> dict | None:
+    try:
+        import sys as _sys
+        app_mod = _sys.modules.get("app")
+        fetch = getattr(app_mod, "_fetch_page_text", None) if app_mod else None
+        extract = getattr(app_mod, "_extract_section_priority", None) if app_mod else None
+        make = getattr(app_mod, "_make_chatbot_result", None) if app_mod else None
+        if not (callable(fetch) and callable(extract) and callable(make)):
+            return None
+        page = fetch("https://demdikk.sn/presentation/")
+        if not page:
+            return None
+        section = extract(
+            page,
+            ("Vision", "Mission", "Offrir une meilleure expérience", "Offrir une meilleure experience"),
+            max_chars=700,
+        )
+        if section and len(section.strip()) >= 60:
+            out = make(section)
+            out.setdefault("query_type", "general")
+            out.setdefault("show_more_info", True)
+            out["sources"] = [{"title": "Présentation – Dakar Dem Dikk", "url": "https://demdikk.sn/presentation/", "score": 0.95}]
+            return out
+    except Exception:
+        pass
+    return {
+        "answer": _PRESENTATION_MISSION_FALLBACK,
+        "summary": "Mission et vision – Dakar Dem Dikk",
+        "sources": [{"title": "Présentation – Dakar Dem Dikk", "url": "https://demdikk.sn/presentation/", "score": 1.0}],
+        "results": [],
+        "query_type": "general",
+        "needs_clarification": False,
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "show_more_info": True,
+    }
+
+
+def _try_presentation_recruitment_payload() -> dict:
+    return {
+        "answer": _PRESENTATION_RECRUTEMENT,
+        "summary": "Recrutement – Dakar Dem Dikk",
+        "sources": [
+            {"title": "Offres d'emploi Dem Dikk", "url": "https://www.jobs.demdikk.sn/", "score": 1.0},
+            {"title": "Chatbot Dakar Dem Dikk", "url": "https://demdikk.sn/chatbot-2303/", "score": 0.9},
+        ],
+        "results": [],
+        "query_type": "general",
+        "needs_clarification": False,
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "show_more_info": True,
+    }
+
+
+def _try_presentation_page_payload(question: str) -> dict | None:
+    try:
+        import sys as _sys
+        app_mod = _sys.modules.get("app")
+        fb_fn = getattr(app_mod, "_fallback_presentation_page", None) if app_mod else None
+        if callable(fb_fn):
+            return fb_fn(question)
+    except Exception:
+        pass
+    return None
+
+
+def _try_presentation_specific_answer(question: str, q_norm: str) -> tuple[dict | None, str]:
+    search_faq, faq_score_fn, faq_usable_fn = _interurban_overview_faq_helpers()
+    if _presentation_director_intent(q_norm):
+        if _presentation_wants_current_dg_only(q_norm):
+            return _presentation_directors_payload(), "directeur_actuel"
+        pres = _try_presentation_directors_extract()
+        if pres:
+            return pres, "presentation_directeurs"
+    if _presentation_mission_intent(q_norm):
+        mission = _try_presentation_mission_extract()
+        if mission:
+            return mission, "presentation_mission"
+    if _presentation_recruitment_intent(q_norm):
+        return _try_presentation_recruitment_payload(), "recrutement_curated"
+    try:
+        import sys as _sys
+        app_mod = _sys.modules.get("app")
+        fetch = getattr(app_mod, "_fetch_page_text", None) if app_mod else None
+        extract = getattr(app_mod, "_extract_section_priority", None) if app_mod else None
+        make = getattr(app_mod, "_make_chatbot_result", None) if app_mod else None
+        if callable(fetch) and callable(extract) and callable(make):
+            if _presentation_recruitment_intent(q_norm):
+                page = fetch("https://demdikk.sn/chatbot-2303/")
+                section = extract(
+                    page or "",
+                    ("recrutement", "Recrutement", "offres d'emploi", "offres d emploi"),
+                    max_chars=900,
+                )
+                if section and _presentation_answer_satisfies_intent(q_norm, section):
+                    out = make(section)
+                    out.setdefault("query_type", "general")
+                    out.setdefault("show_more_info", True)
+                    return out, "faq_extract_recrutement"
+    except Exception:
+        pass
+    if callable(search_faq):
+        for q in _presentation_specific_search_queries(question, q_norm):
+            try:
+                fb = search_faq(q)
+                faq_score = faq_score_fn(fb) if callable(faq_score_fn) else 0.0
+                faq_ok = callable(faq_usable_fn) and faq_usable_fn(fb, question, q_norm)
+                ans = (fb or {}).get("answer") or ""
+                if (
+                    fb
+                    and faq_score >= _TRIGGER_FAQ_MIN_SCORE
+                    and faq_ok
+                    and _presentation_answer_satisfies_intent(q_norm, ans)
+                ):
+                    out = dict(fb)
+                    out.setdefault("query_type", "general")
+                    out.setdefault("show_more_info", True)
+                    return out, f"faq score={faq_score:.2f}"
+            except Exception:
+                continue
+    if _presentation_director_intent(q_norm):
+        pres = _try_presentation_directors_extract()
+        if pres:
+            return pres, "presentation_directeurs"
+    pres = _try_presentation_page_payload(question)
+    if pres and pres.get("answer"):
+        ans = pres["answer"]
+        if _presentation_director_intent(q_norm) and not _presentation_answer_satisfies_intent(q_norm, ans):
+            pres2 = _try_presentation_directors_extract()
+            if pres2:
+                return pres2, "presentation_directeurs"
+        if len(ans) >= 80 and (
+            _presentation_answer_satisfies_intent(q_norm, ans)
+            or not _presentation_recruitment_intent(q_norm)
+        ):
+            out = dict(pres)
+            out.setdefault("query_type", "general")
+            out.setdefault("show_more_info", True)
+            return out, "presentation_page"
+    try:
+        best: dict | None = None
+        best_score = -1.0
+        seen: set[str] = set()
+        for q in _presentation_specific_search_queries(question, q_norm):
+            for hit in (_search(q, top_k=8) or []):
+                content = (hit.get("content") or "").strip()
+                key = _norm(content)[:240]
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                if not _presentation_rag_hit_usable(q_norm, hit):
+                    continue
+                score = float(hit.get("score") or 0)
+                if score > best_score:
+                    best_score = score
+                    best = hit
+        if best and best_score >= _TRIGGER_RAG_MIN_SCORE:
+            out = _payload_from_rag_hit(best)
+            out.setdefault("query_type", "general")
+            out.setdefault("show_more_info", True)
+            return out, f"rag score={best_score:.2f} title={(best.get('title') or '')[:50]!r}"
+    except Exception as exc:
+        return None, f"rag_error={exc!r}"
+    return None, "no_hit"
+
+
+# ── TRIGGER 7 : FAQ chatbot-2303 (§5.1 — sujets non couverts par triggers 1-6) ──
+_FAQ7_TOPICS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    ("bagage", ("bagage", "bagages"), (
+        "poids", "dimension", "maximum", "autorise", "interdit", "combien",
+        "politique", "regle", "cabine", "soute", "valise", "cabine",
+    )),
+    ("remboursement", ("remboursement", "rembourser", "rembourse"), (
+        "comment", "delai", "conditions", "billet", "annul", "obtenir", "demande",
+    )),
+    ("annulation", ("annulation", "annuler", "annule"), (
+        "comment", "conditions", "billet", "frais", "voyage", "demande",
+    )),
+    ("report", ("report", "reporte", "reporter"), (
+        "comment", "conditions", "voyage", "billet", "date", "demande",
+    )),
+    ("geolocalisation", (
+        "geolocalisation", "geolocalisa", "suivi bus", "position bus", "temps reel",
+    ), ("comment", "carte", "application", "suivre", "bus", "ou ", "temps")),
+    ("objet_perdu", ("objet perdu", "objets perdus"), (
+        "comment", "ou ", "retrouver", "declare", "trouve", "perdu",
+    )),
+    ("perturbation", (
+        "perturbation", "incident", "greve", "intemperie", "crise", "communication",
+    ), ("retard", "panne", "maintenance", "circulation", "greve", "incident")),
+    ("fess_dem", ("fess dem",), ()),
+    ("location", ("location", "louer un bus", "louer bus"), (
+        "tarif", "devis", "contact", "evenement", "bus", "scolaire", "navette",
+    )),
+    ("reservation", ("reservation", "reserver", "reservez"), (
+        "comment", "modifier", "modification", "billet", "conditions", "ou ", "booking",
+    )),
+    ("enfant", ("carte enfant", "mon enfant"), (
+        "carte", "obtenir", "conditions", "enfant", "scolaire",
+    )),
+    ("contact", ("service client", "horaire agence"), (
+        "contact", "telephone", "assistance", "agence", "appeler", "horaire",
+    )),
+)
+_FAQ7_TOPIC_MAP = {spec[0]: spec for spec in _FAQ7_TOPICS}
+_FAQ7_GENERIC_INTENT = (
+    "comment", "combien", "ou ", "quand", "delai", "conditions", "politique",
+    "demande", "procedure", "tarif", "prix",
+)
+
+
+def _faq7_blocked_by_other_trigger(qn: str) -> bool:
+    if any(t in qn for t in _AIBD_TRIGGERS):
+        return True
+    if _matches_app_trigger(qn):
+        return True
+    if _matches_tek_dem_trigger(qn):
+        return True
+    if _is_colis_service_query(qn):
+        return True
+    if _matches_afrique_trigger(qn):
+        return True
+    if _matches_presentation_trigger(qn):
+        return True
+    if _detect_event_intent(qn):
+        return True
+    if any(m in qn for m in ("publicite", "partenariat", "partenaire")):
+        return True
+    return False
+
+
+def _matches_faq7_trigger(qn: str) -> str | None:
+    qn = (qn or "").strip()
+    if not qn or _faq7_blocked_by_other_trigger(qn):
+        return None
+    for topic_id, keys, _ in _FAQ7_TOPICS:
+        for k in keys:
+            if k in qn:
+                return topic_id
+    return None
+
+
+def _faq7_has_specific_intent(qn: str, topic_id: str) -> bool:
+    spec = _FAQ7_TOPIC_MAP.get(topic_id)
+    if not spec:
+        return True
+    keys = spec[1]
+    if any(k in qn for k in keys):
+        tokens = [w for w in qn.split() if len(w) >= 3 and w not in _ENRICH_STOPWORDS]
+        if len(tokens) <= 2:
+            return True
+    markers = spec[2]
+    if not markers:
+        return True
+    if any(m in qn for m in markers):
+        return True
+    if any(m in qn for m in _FAQ7_GENERIC_INTENT):
+        return True
+    tokens = [w for w in qn.split() if len(w) >= 3 and w not in _ENRICH_STOPWORDS]
+    return len(tokens) >= 2
+
+
+def _faq7_search_queries(question: str, q_norm: str, topic_id: str) -> list[str]:
+    queries = [question]
+    extra: dict[str, list[str]] = {
+        "bagage": ["Politique bagages Dem Dikk poids dimensions"],
+        "remboursement": ["Remboursement billet Dem Dikk conditions délai"],
+        "annulation": ["Annulation et report billet Dem Dikk"],
+        "report": ["Annulation et report voyage Dem Dikk"],
+        "geolocalisation": ["Géolocalisation temps réel bus Dem Dikk"],
+        "objet_perdu": ["Objets perdus Dem Dikk agence"],
+        "perturbation": ["Gestion des perturbations Dem Dikk"],
+        "fess_dem": ["Réseau Fess Dem Dem Dikk"],
+        "location": ["Location de bus Dem Dikk événement"],
+        "reservation": ["Réservation et modification billet Dem Dikk"],
+        "enfant": ["carte pour mon enfant Dem Dikk"],
+        "contact": ["Contact service client Dem Dikk agence"],
+    }
+    queries.extend(extra.get(topic_id, []))
+    seen: set[str] = set()
+    out: list[str] = []
+    for q in queries:
+        key = _norm(q)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(q)
+    return out
+
+
+def _faq7_answer_satisfies_intent(q_norm: str, answer: str, topic_id: str) -> bool:
+    an = _norm(answer)
+    if not an or len(an) < 30:
+        return False
+    if any(w in an for w in ("agent-ia", "guide complet des services", "je n'ai pas trouv")):
+        return False
+    topic_checks: dict[str, tuple[str, ...]] = {
+        "bagage": ("bagage", "bagages", "poids", "dimension", "soute", "cabine"),
+        "remboursement": ("remboursement", "rembourser", "billet"),
+        "annulation": ("annulation", "annuler", "report"),
+        "report": ("report", "annulation", "voyage", "billet"),
+        "geolocalisation": ("geolocal", "temps reel", "position", "carte", "bus", "passage", "estimee"),
+        "objet_perdu": ("objet", "perdu", "trouve", "agence"),
+        "perturbation": ("perturbation", "incident", "crise", "retard", "circulation"),
+        "fess_dem": ("fess dem", "fess"),
+        "location": ("location", "louer", "bus", "evenement", "commercial"),
+        "reservation": ("reserv", "billet", "voyage", "application", "agence"),
+        "enfant": ("enfant", "carte", "scolaire"),
+        "contact": ("contact", "824", "agence", "assistance", "service"),
+    }
+    need = topic_checks.get(topic_id, ("dem dikk", "ddd"))
+    return any(w in an for w in need)
+
+
+def _faq7_rag_hit_usable(q_norm: str, hit: dict, topic_id: str) -> bool:
+    content = (hit.get("content") or "").strip()
+    if not _trigger_rag_content_usable(content):
+        return False
+    title_n = _norm(hit.get("title") or "")
+    if "agent-ia" in title_n or "agent ia" in title_n:
+        return False
+    return _faq7_answer_satisfies_intent(q_norm, content, topic_id)
+
+
+_FAQ7_EXTRACT_MARKERS: dict[str, tuple[str, ...]] = {
+    "bagage": ("Politique bagages", "Politique des Bagages", "Bagages à bord"),
+    "remboursement": ("Remboursement", "Les demandes de remboursement"),
+    "annulation": ("Annulation et report", "Annulation/Report"),
+    "report": ("Annulation et report", "report de votre voyage"),
+    "geolocalisation": (
+        "Géolocalisation temps réel",
+        "Position des bus sur la carte",
+        "Heure de passage estimée",
+    ),
+    "objet_perdu": ("Objets perdus", "objets trouvés"),
+    "perturbation": ("Gestion des perturbations", "Communication de crise"),
+    "fess_dem": ("Réseau Fess Dem", "Fess Dem"),
+    "location": ("Location de bus", "Location pour événements"),
+    "reservation": ("Réservation et modification", "Vous pouvez réserver"),
+    "enfant": ("carte pour mon enfant", "Puis-je obtenir une carte pour mon enfant"),
+    "contact": ("Contact et assistance", "service client"),
+}
+
+
+def _faq7_app_page_helpers() -> tuple:
+    try:
+        import importlib as _imp
+        import sys as _sys
+        app_mod = _sys.modules.get("app")
+        if app_mod is None:
+            app_mod = _imp.import_module("app")
+        return (
+            getattr(app_mod, "_fetch_page_text", None),
+            getattr(app_mod, "_extract_section_priority", None),
+            getattr(app_mod, "_make_chatbot_result", None),
+        )
+    except Exception:
+        return None, None, None
+
+
+_FAQ7_CURATED: dict[str, str] = {
+    "fess_dem": (
+        "Fess Dem est la liaison express Dakar Dem Dikk entre Dakar et Thiès. "
+        "Départs depuis la gare de Colobane. Horaires et billetterie via l'application Dem Dikk "
+        "ou le +221 33 824 10 10."
+    ),
+    "geolocalisation": (
+        "L'application mobile Dem Dikk propose la géolocalisation en temps réel : "
+        "position des bus sur la carte et heure de passage estimée (selon les lignes équipées)."
+    ),
+}
+
+
+def _try_faq7_specific_answer(
+    question: str, q_norm: str, topic_id: str,
+) -> tuple[dict | None, str]:
+    search_faq, faq_score_fn, faq_usable_fn = _interurban_overview_faq_helpers()
+    fetch, extract, make = _faq7_app_page_helpers()
+    try:
+        markers = _FAQ7_EXTRACT_MARKERS.get(topic_id)
+        if markers and callable(fetch) and callable(extract) and callable(make):
+            page = fetch("https://demdikk.sn/chatbot-2303/")
+            section = extract(page or "", markers, max_chars=1000)
+            if section and _faq7_answer_satisfies_intent(q_norm, section, topic_id):
+                section = _faq7_clip_answer(topic_id, section)
+                out = make(section)
+                out.setdefault("query_type", "general")
+                out.setdefault("show_more_info", True)
+                return out, f"faq_extract_{topic_id}"
+    except Exception:
+        pass
+    if callable(search_faq):
+        for q in _faq7_search_queries(question, q_norm, topic_id):
+            try:
+                fb = search_faq(q)
+                faq_score = faq_score_fn(fb) if callable(faq_score_fn) else 0.0
+                faq_ok = callable(faq_usable_fn) and faq_usable_fn(fb, question, q_norm)
+                ans = (fb or {}).get("answer") or ""
+                if len(ans) < 50 and topic_id in ("geolocalisation", "fess_dem", "location"):
+                    continue
+                if (
+                    fb
+                    and faq_score >= _TRIGGER_FAQ_MIN_SCORE
+                    and _faq7_answer_satisfies_intent(q_norm, ans, topic_id)
+                ):
+                    out = dict(fb)
+                    out.setdefault("query_type", "general")
+                    out.setdefault("show_more_info", True)
+                    return out, f"faq score={faq_score:.2f}"
+            except Exception:
+                continue
+    try:
+        best: dict | None = None
+        best_score = -1.0
+        seen: set[str] = set()
+        for q in _faq7_search_queries(question, q_norm, topic_id):
+            for hit in (_search(q, top_k=8) or []):
+                content = (hit.get("content") or "").strip()
+                key = _norm(content)[:240]
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                if not _faq7_rag_hit_usable(q_norm, hit, topic_id):
+                    continue
+                score = float(hit.get("score") or 0)
+                if score > best_score:
+                    best_score = score
+                    best = hit
+        if best and best_score >= _TRIGGER_RAG_MIN_SCORE:
+            out = _payload_from_rag_hit(best)
+            out.setdefault("query_type", "general")
+            out.setdefault("show_more_info", True)
+            return out, f"rag score={best_score:.2f} title={(best.get('title') or '')[:50]!r}"
+    except Exception as exc:
+        return None, f"rag_error={exc!r}"
+    curated = _FAQ7_CURATED.get(topic_id)
+    if curated:
+        return {
+            "answer": curated,
+            "summary": curated[:200],
+            "sources": [{"title": "Chatbot Dakar Dem Dikk", "url": "https://demdikk.sn/chatbot-2303/", "score": 0.9}],
+            "results": [],
+            "query_type": "general",
+            "show_more_info": True,
+        }, "curated"
+    return None, "no_hit"
+
+
+def _faq7_clip_answer(topic_id: str, answer: str) -> str:
+    text = (answer or "").strip()
+    if not text:
+        return text
+    if topic_id == "geolocalisation":
+        for marker in (
+            "Paiement dématérialisé", "Paiement dematerialise",
+            "Maintenance prédictive", "GESTION DES PERTURBATIONS",
+        ):
+            idx = text.find(marker)
+            if idx > 80:
+                return text[:idx].strip()
+    if topic_id == "perturbation":
+        for marker in ("PROGRAMME", "INFORMATIONS TECHNIQUES", "Réseau Fess Dem"):
+            idx = text.find(marker)
+            if idx > 120:
+                return text[:idx].strip()
+    return text
+
+
+def _faq7_answer_too_weak(answer: str, topic_id: str) -> bool:
+    ans = (answer or "").strip()
+    if len(ans) < 60:
+        return True
+    if ans.rstrip().endswith(",") and len(ans) < 80:
+        return True
+    if topic_id == "geolocalisation" and "temps reel" not in _norm(ans) and "application" not in _norm(ans):
+        return len(ans) < 100
+    return False
+
+
+def _faq7_curated_payload(topic_id: str) -> dict | None:
+    curated = _FAQ7_CURATED.get(topic_id)
+    if not curated:
+        return None
+    return {
+        "answer": curated,
+        "summary": curated[:200],
+        "sources": [{"title": "Chatbot Dakar Dem Dikk", "url": "https://demdikk.sn/chatbot-2303/", "score": 0.9}],
+        "results": [],
+        "query_type": "general",
+        "show_more_info": True,
+    }
+
+
+def _try_faq7_fixe_answer(question: str, q_norm: str, topic_id: str) -> dict | None:
+    search_faq, faq_score_fn, faq_usable_fn = _interurban_overview_faq_helpers()
+    if callable(search_faq):
+        try:
+            fb = search_faq(question)
+            faq_score = faq_score_fn(fb) if callable(faq_score_fn) else 0.0
+            faq_ok = callable(faq_usable_fn) and faq_usable_fn(fb, question, q_norm)
+            ans = (fb or {}).get("answer") or ""
+            if fb and faq_score >= _TRIGGER_FAQ_MIN_SCORE and faq_ok and len(ans) >= 40:
+                if not _faq7_answer_too_weak(ans, topic_id):
+                    out = dict(fb)
+                    out.setdefault("query_type", "general")
+                    out.setdefault("show_more_info", True)
+                    return out
+        except Exception:
+            pass
+    return _faq7_curated_payload(topic_id)
+
+
 def _interurban_rag_content_usable(content: str) -> bool:
     """Ignore les libellés courts type « Destinations Sénégal Dem Dikk »."""
     c = (content or "").strip()
@@ -2715,6 +4058,53 @@ def _get_line_by_number(num: str) -> dict | None:
     return None
 
 
+def _line_horaires_intent(qn: str) -> bool:
+    return any(
+        w in (qn or "")
+        for w in ("horaire", "horaires", "heure", "heures", "depart", "departs", "frequence", "passage")
+    )
+
+
+def _format_line_horaires_response(line_num: str, line_data: dict, question: str) -> str:
+    start = line_data.get("start") or ""
+    end = line_data.get("end") or ""
+    intro = (
+        f"Ligne {line_num} ({start} ↔ {end}) : les horaires de passage aux arrêts varient "
+        f"selon la circulation à Dakar."
+    )
+    urban_note = ""
+    try:
+        import sys as _sys
+        app_mod = _sys.modules.get("app")
+        fetch = getattr(app_mod, "_fetch_page_text", None) if app_mod else None
+        extract = getattr(app_mod, "_extract_section_priority", None) if app_mod else None
+        make = getattr(app_mod, "_make_chatbot_result", None) if app_mod else None
+        if callable(fetch) and callable(extract):
+            page = fetch("https://demdikk.sn/chatbot-2303/")
+            section = extract(
+                page or "",
+                ("Plage horaire globale", "horaires bus urbain", "Fréquence et régularité"),
+                max_chars=550,
+            )
+            if section and len(section.strip()) >= 60:
+                urban_note = " " + (
+                    (make(section).get("answer") or "").strip()
+                    if callable(make) else section.strip()
+                )
+    except Exception:
+        pass
+    if not urban_note:
+        urban_note = (
+            " Service généralement de 5h30–6h00 (premiers départs) à 20h30–21h00 "
+            "(derniers départs aux terminus)."
+        )
+    tail = (
+        " Pour l'heure de passage estimée sur cette ligne, utilisez l'application Dem Dikk "
+        "(géolocalisation temps réel) ou appelez le +221 33 824 10 10."
+    )
+    return (intro + urban_note + tail).strip()
+
+
 # ── Lignes desservant un arrêt ────────────────────────────────────────────────
 _LINES_TO_STOP_KW = re.compile(
     r'\b(quelle\s+ligne|quelles\s+lignes|aller\s+[aà]|comment\s+aller|'
@@ -3725,6 +5115,21 @@ def ask():
         line_num  = _detect_line_number(question)
         line_data = _get_line_by_number(line_num) if line_num else None
         if line_data:
+            if _line_horaires_intent(q_norm):
+                answer = _format_line_horaires_response(line_num, line_data, question)
+                return jsonify({
+                    "answer":      answer,
+                    "summary":     f"Horaires ligne {line_num}",
+                    "sources":     [{"title": "Réseau Urbain DDD",
+                                     "url": "https://demdikk.sn/reseau-urbain-dakar/", "score": 1.0}],
+                    "results":     [],
+                    "query_type":  "line_horaires",
+                    "has_structured_data": False,
+                    "is_city_query": False,
+                    "is_line_query": True,
+                    "needs_clarification": False,
+                    "show_more_info": True,
+                })
             ld = dict(line_data)
             ld["stop_count"] = len(ld.get("stops", []))
             return jsonify({

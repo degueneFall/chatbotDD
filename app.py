@@ -988,7 +988,7 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
                 context_parts.append(fb_i["answer"])
 
         # Fallback ciblé "Afrique Dem Dikk" (ex : Gambie / Banjul)
-        if any(k in qn for k in ("afrique dem dikk", "afrique", "gambie", "gambia", "banjul", "senegal")):
+        if any(k in qn for k in ("afrique dem dikk", "gambie", "gambia", "banjul")):
             fb_a = _fallback_afrique_dem_dikk(question)
             if fb_a and fb_a.get("answer"):
                 context_parts.append(fb_a["answer"])
@@ -1615,45 +1615,40 @@ def _afrique_short_presentation_payload() -> dict:
 
 
 def _fallback_afrique_dem_dikk(question: str) -> dict | None:
-    """Extrait du contenu utile sur 'Afrique Dem Dikk' depuis la page officielle chatbot."""
+    """Extrait ADD / Gambie / Banjul — délègue au trigger app_backup si disponible."""
     qn = _norm(question)
     if not qn:
         return None
-
-    triggers = (
-        "afrique dem dikk",
-        "afrique",
-        "gambie",
-        "gambia",
-        "banjul",
-        "senegal",
-        "add",
-    )
-    if not any(t in qn for t in triggers):
+    _match_fn = getattr(_mod, "_matches_afrique_trigger", None)
+    _bare_fn = getattr(_mod, "_is_bare_afrique_query", None)
+    _fixe_fn = getattr(_mod, "_afrique_fixe_payload", None)
+    if callable(_match_fn) and not _match_fn(qn):
         return None
-
-    if _is_bare_afrique_dem_dikk_query(qn):
-        return _afrique_short_presentation_payload()
+    if callable(_bare_fn) and callable(_fixe_fn) and _bare_fn(qn):
+        return _fixe_fn(None)
 
     url = "https://demdikk.sn/chatbot-2303/"
     page_text = _fetch_page_text(url)
     if not page_text:
-        return None
+        return _fixe_fn(None) if callable(_fixe_fn) else None
 
     section = _extract_section(
         page_text,
         (
+            "AFRIQUE DEM DIKK (INTERNATIONAL)",
+            "Afrique Dem Dikk (ADD)",
             "Afrique Dem Dikk",
-            "AFRIQUE DEM DIKK",
             "Gambie",
-            "GAMBIE",
             "Banjul",
-            "BANJUL",
         ),
         max_chars=2200,
     )
     if not section or len(section) < 60:
-        return None
+        return _fixe_fn(None) if callable(_fixe_fn) else None
+
+    _clip_fn = getattr(_mod, "_afrique_clip_answer", None)
+    if callable(_clip_fn):
+        section = _clip_fn(qn, section)
 
     return {
         "answer": section,
@@ -2178,6 +2173,42 @@ def _search_chatbot_page_blocks(question: str) -> dict | None:
             "Korite",
             "Magal de Touba, Gamou, Korité",
         )),
+        ("afrique dem dikk", (
+            "AFRIQUE DEM DIKK (INTERNATIONAL)",
+            "Afrique Dem Dikk (ADD)",
+        )),
+        ("gambie", (
+            "AFRIQUE DEM DIKK (INTERNATIONAL)",
+            "Afrique Dem Dikk (ADD) dessert actuellement la Gambie",
+        )),
+        ("banjul", (
+            "Dakar -> Banjul",
+            "Banjul -> Dakar",
+            "AFRIQUE DEM DIKK",
+        )),
+        ("geolocalisation", (
+            "Géolocalisation temps réel",
+            "Position des bus sur la carte",
+            "Heure de passage estimée",
+        )),
+        ("objet perdu", (
+            "Objets perdus",
+            "objets trouvés",
+            "registre des objets",
+        )),
+        ("objets perdus", (
+            "Objets perdus",
+            "objets trouvés",
+        )),
+        ("fess dem", (
+            "Réseau Fess Dem",
+            "Fess Dem",
+        )),
+        ("location", (
+            "Location de bus",
+            "Location pour événements",
+            "servicecommercial@demdikk.sn",
+        )),
     ]
     for key, markers in _topic_markers:
         if key in qn_raw:
@@ -2270,6 +2301,31 @@ def _fallback_presentation_page(question: str) -> dict | None:
     Nom de la société seul → synthèse courte ; sinon scrape de demdikk.sn/presentation/.
     """
     qn = _norm(question)
+    _bare_fn = getattr(_mod, "_is_bare_presentation_query", None)
+    _fixe_fn = getattr(_mod, "_presentation_fixe_payload", None)
+    _dir_fn = getattr(_mod, "_presentation_director_intent", None)
+    _dir_only_fn = getattr(_mod, "_presentation_wants_current_dg_only", None)
+    _dir_payload_fn = getattr(_mod, "_presentation_directors_payload", None)
+    _dir_extract_fn = getattr(_mod, "_try_presentation_directors_extract", None)
+    _mission_fn = getattr(_mod, "_presentation_mission_intent", None)
+    _mission_extract_fn = getattr(_mod, "_try_presentation_mission_extract", None)
+    _recruit_fn = getattr(_mod, "_presentation_recruitment_intent", None)
+    _recruit_payload_fn = getattr(_mod, "_try_presentation_recruitment_payload", None)
+    if callable(_recruit_fn) and _recruit_fn(qn) and callable(_recruit_payload_fn):
+        return _recruit_payload_fn()
+    if callable(_mission_fn) and _mission_fn(qn) and callable(_mission_extract_fn):
+        mission = _mission_extract_fn()
+        if mission:
+            return mission
+    if callable(_dir_fn) and _dir_fn(qn):
+        if callable(_dir_only_fn) and _dir_only_fn(qn) and callable(_dir_payload_fn):
+            return _dir_payload_fn()
+        if callable(_dir_extract_fn):
+            pres = _dir_extract_fn()
+            if pres:
+                return pres
+    if callable(_bare_fn) and callable(_fixe_fn) and _bare_fn(qn):
+        return _fixe_fn(None)
     if _is_bare_company_name_query(qn):
         return _company_short_presentation_payload()
 
@@ -2522,6 +2578,42 @@ def _format_faq_page_prose(text: str) -> str:
     return "\n\n".join(paragraphs)
 
 
+def _merge_short_prose_lines(text: str) -> str:
+    """Fusionne les lignes trop courtes (extrait FAQ mal découpé) en paragraphes lisibles."""
+    import re
+
+    if not (text or "").strip():
+        return text or ""
+    raw = [ln.strip() for ln in text.replace("\r\n", "\n").split("\n") if ln.strip()]
+    if len(raw) <= 1:
+        return text.strip()
+    out: list[str] = []
+    buf = ""
+    for ln in raw:
+        if re.match(r"^[–•\-▸]", ln) or re.match(r"^###\s", ln):
+            if buf:
+                out.append(buf.strip())
+                buf = ""
+            out.append(ln)
+            continue
+        if buf and (
+            len(ln) < 48
+            or ln.startswith((",", ";", ":", ")", "»"))
+            or re.match(r"^\d{1,2}h\d{0,2}\b", ln, re.I)
+            or (buf.endswith((":", "->", "→", "à", "a", "et")) and len(ln) < 72)
+        ):
+            joiner = "" if (buf.endswith(("-", "→", "->")) or ln.startswith((",", ";", ":", ")", "»"))) else " "
+            buf = f"{buf}{joiner}{ln}"
+        elif buf:
+            out.append(buf.strip())
+            buf = ln
+        else:
+            buf = ln
+    if buf:
+        out.append(buf.strip())
+    return "\n\n".join(out)
+
+
 def _light_clean(text: str) -> str:
     """Nettoyage minimal : retire seulement les ## de niveau section (## 8.) mais conserve
     les sous-titres ### et les tirets – pour que le frontend les rende en blocs."""
@@ -2621,6 +2713,7 @@ def _faq_clip_for_question_intent(question: str, qn_raw: str, section: str) -> s
 def _make_chatbot_result(section: str) -> dict:
     """Construit un dict résultat standard depuis un extrait de page officielle."""
     prose = _format_faq_page_prose(section) if section else section
+    prose = _merge_short_prose_lines(prose) if prose else prose
     clean = _light_clean(prose) if prose else prose
     return {
         "answer": clean,
@@ -2776,8 +2869,7 @@ if _original_ask:
         if _is_presentation_query(question, qn):
             fb_pres = _fallback_presentation_page(question)
             if fb_pres:
-                enhance_pres = not _is_bare_company_name_query(qn)
-                return _reply(fb_pres, enhance=enhance_pres)
+                return _reply(fb_pres, enhance=False)
 
         # Hors-sujet : mots ambigus (sport, météo…) seulement sans contexte transport DDD
         if _is_strict_off_topic(question, qn):
@@ -2853,13 +2945,39 @@ if _original_ask:
                 enhance_i = qt_i not in ("city_info", "interurban_overview")
                 return (_reply(fb_i, enhance=enhance_i), *rest) if rest else _reply(fb_i, enhance=enhance_i)
 
-            # Afrique Dem Dikk : prioritaire pour "gambie/senegal/banjul/afrique"
-            af_triggers = ("afrique dem dikk", "afrique", "gambie", "gambia", "banjul", "senegal", "add")
-            wants_afrique = any(t in qn for t in af_triggers)
-            fb_a = _fallback_afrique_dem_dikk(question)
-            if fb_a and wants_afrique:
-                enhance_a = not _is_bare_afrique_dem_dikk_query(qn)
-                return (_reply(fb_a, enhance=enhance_a), *rest) if rest else _reply(fb_a, enhance=enhance_a)
+            # TRIGGER 5 — Afrique Dem Dikk / Gambie / Banjul (app.py ~2856, logique dans app_backup)
+            _af_match_fn = getattr(_mod, "_matches_afrique_trigger", None)
+            _af_intent = getattr(_mod, "_afrique_has_specific_intent", None)
+            _try_af = getattr(_mod, "_try_afrique_specific_answer", None)
+            _af_bare = getattr(_mod, "_is_bare_afrique_query", None)
+            _af_fixe = getattr(_mod, "_afrique_fixe_payload", None)
+            _af_match = _af_match_fn(qn) if callable(_af_match_fn) else None
+            if _af_match:
+                if callable(_af_intent) and _af_intent(qn) and callable(_try_af):
+                    already_faq = (
+                        _faq_answer_usable(data, question, qn)
+                        and _chatbot_faq_score(data) >= 0.5
+                    )
+                    if not already_faq:
+                        specific, reason = _try_af(question, qn)
+                        if specific:
+                            _dbg_trigger("afrique", f"keyword={_af_match!r} specific=yes source={reason}")
+                            return (_reply(specific, enhance=False), *rest) if rest else _reply(specific, enhance=False)
+                    else:
+                        _clip_af = getattr(_mod, "_afrique_clip_answer", None)
+                        out = dict(data)
+                        if callable(_clip_af):
+                            clipped = _clip_af(qn, out.get("answer") or "")
+                            out["answer"] = clipped
+                            out["summary"] = clipped[:200]
+                        _dbg_trigger("afrique", f"keyword={_af_match!r} specific=yes source=backup_faq")
+                        return (_reply(out, enhance=False), *rest) if rest else _reply(out, enhance=False)
+                fb_a = _fallback_afrique_dem_dikk(question)
+                if callable(_af_fixe):
+                    fb_a = _af_fixe(None if (callable(_af_bare) and _af_bare(qn)) else fb_a)
+                if fb_a:
+                    _dbg_trigger("afrique", f"keyword={_af_match!r} specific=no source=fixe")
+                    return (_reply(fb_a, enhance=False), *rest) if rest else _reply(fb_a, enhance=False)
 
             ans = (data.get("answer") or "").strip()
             if "je n'ai pas trouv" in ans.lower():
@@ -2872,14 +2990,85 @@ if _original_ask:
             rag_ok = _rag_answer_trustworthy(data, question, qn)
             is_structured = _is_structured_ask_response(data)
 
-            # Application mobile : toujours préférer l'extrait page officielle (chatbot-2303)
-            # lorsqu'il est disponible — l'index peut renvoyer un chunk « acceptable » (score)
-            # mais sans répondre à la question (Play Store, fonctionnalités, etc.).
-            if any(k in qn for k in ("application", "appli", "google play", "app store")):
+            # TRIGGER 6 — Présentation société (app.py ~3046, logique dans app_backup)
+            _pres_match_fn = getattr(_mod, "_matches_presentation_trigger", None)
+            _pres_intent = getattr(_mod, "_presentation_has_specific_intent", None)
+            _try_pres = getattr(_mod, "_try_presentation_specific_answer", None)
+            _pres_bare = getattr(_mod, "_is_bare_presentation_query", None)
+            _pres_fixe = getattr(_mod, "_presentation_fixe_payload", None)
+            _pres_match = _pres_match_fn(qn) if callable(_pres_match_fn) else None
+            if _pres_match:
+                if callable(_pres_intent) and _pres_intent(qn) and callable(_try_pres):
+                    already_faq = (
+                        _faq_answer_usable(data, question, qn)
+                        and _chatbot_faq_score(data) >= 0.5
+                    )
+                    if not already_faq:
+                        specific, reason = _try_pres(question, qn)
+                        if specific:
+                            _dbg_trigger("presentation", f"keyword={_pres_match!r} specific=yes source={reason}")
+                            return (_reply(specific, enhance=False), *rest) if rest else _reply(specific, enhance=False)
+                    else:
+                        _pres_satisfies = getattr(_mod, "_presentation_answer_satisfies_intent", None)
+                        ans_faq = (data.get("answer") or "").strip()
+                        if callable(_pres_satisfies) and not _pres_satisfies(qn, ans_faq) and callable(_try_pres):
+                            specific, reason = _try_pres(question, qn)
+                            if specific:
+                                _dbg_trigger("presentation", f"keyword={_pres_match!r} specific=yes source={reason}")
+                                return (_reply(specific, enhance=False), *rest) if rest else _reply(specific, enhance=False)
+                        out = dict(data)
+                        _recruit_fixe = getattr(_mod, "_try_presentation_recruitment_payload", None)
+                        _recruit_intent = getattr(_mod, "_presentation_recruitment_intent", None)
+                        if callable(_recruit_intent) and _recruit_intent(qn) and callable(_recruit_fixe):
+                            weak = getattr(_mod, "_presentation_recruitment_answer_too_weak", None)
+                            if not callable(weak) or weak(ans_faq):
+                                out = _recruit_fixe()
+                        _dbg_trigger("presentation", f"keyword={_pres_match!r} specific=yes source=backup_faq")
+                        return (_reply(out, enhance=False), *rest) if rest else _reply(out, enhance=False)
+                fb_pres = _fallback_presentation_page(question)
+                if callable(_pres_fixe):
+                    fb_pres = _pres_fixe(None if (callable(_pres_bare) and _pres_bare(qn)) else fb_pres)
+                if fb_pres:
+                    _dbg_trigger("presentation", f"keyword={_pres_match!r} specific=no source=fixe")
+                    return (_reply(fb_pres, enhance=False), *rest) if rest else _reply(fb_pres, enhance=False)
+
+            # TRIGGER 4 — Application mobile (app.py ~2875, logique intent dans app_backup)
+            _app_match_fn = getattr(_mod, "_matches_app_trigger", None)
+            _app_intent = getattr(_mod, "_app_has_specific_intent", None)
+            _try_app = getattr(_mod, "_try_app_specific_answer", None)
+            _app_match = _app_match_fn(qn) if callable(_app_match_fn) else None
+            if _app_match:
+                if callable(_app_intent) and _app_intent(qn) and callable(_try_app):
+                    already_faq = (
+                        _faq_answer_usable(data, question, qn)
+                        and _chatbot_faq_score(data) >= 0.5
+                    )
+                    if not already_faq:
+                        specific, reason = _try_app(question, qn)
+                        if specific:
+                            _dbg_trigger("application", f"keyword={_app_match!r} specific=yes source={reason}")
+                            return (_reply(specific, enhance=False), *rest) if rest else _reply(specific, enhance=False)
+                    else:
+                        _app_satisfies = getattr(_mod, "_app_answer_satisfies_intent", None)
+                        ans_faq = (data.get("answer") or "").strip()
+                        if callable(_app_satisfies) and not _app_satisfies(qn, ans_faq) and callable(_try_app):
+                            specific, reason = _try_app(question, qn)
+                            if specific:
+                                _dbg_trigger("application", f"keyword={_app_match!r} specific=yes source={reason}")
+                                return (_reply(specific, enhance=False), *rest) if rest else _reply(specific, enhance=False)
+                        out = dict(data)
+                        _app_fixe = getattr(_mod, "_app_fixe_payload", None)
+                        if callable(_app_fixe):
+                            out = _app_fixe(out) or out
+                        _dbg_trigger("application", f"keyword={_app_match!r} specific=yes source=backup_faq")
+                        return (_reply(out, enhance=False), *rest) if rest else _reply(out, enhance=False)
                 fb_app = _fallback_from_site(question)
+                _app_fixe = getattr(_mod, "_app_fixe_payload", None)
+                if callable(_app_fixe):
+                    fb_app = _app_fixe(None if not (callable(_app_intent) and _app_intent(qn)) else fb_app)
                 if fb_app:
-                    data = fb_app
-                    rag_ok = _rag_answer_usable(data)
+                    _dbg_trigger("application", f"keyword={_app_match!r} specific=no source=fixe")
+                    return (_reply(fb_app, enhance=False), *rest) if rest else _reply(fb_app, enhance=False)
 
             # TRIGGER 3 — Tek Dem (app.py ~2900, logique intent dans app_backup)
             _tek_match_fn = getattr(_mod, "_matches_tek_dem_trigger", None)
@@ -2938,6 +3127,49 @@ if _original_ask:
                     _dbg_trigger("colis", f"keyword={colis_matched!r} specific=no source=fixe")
                     return (_reply(fb2, enhance=False), *rest) if rest else _reply(fb2, enhance=False)
 
+            # TRIGGER 7 — FAQ chatbot-2303 §5.1 (bagages, remboursement, perturbations…)
+            _faq7_match_fn = getattr(_mod, "_matches_faq7_trigger", None)
+            _faq7_intent_fn = getattr(_mod, "_faq7_has_specific_intent", None)
+            _try_faq7 = getattr(_mod, "_try_faq7_specific_answer", None)
+            _faq7_fixe_fn = getattr(_mod, "_try_faq7_fixe_answer", None)
+            _faq7_topic = _faq7_match_fn(qn) if callable(_faq7_match_fn) else None
+            if _faq7_topic:
+                if callable(_faq7_intent_fn) and _faq7_intent_fn(qn, _faq7_topic) and callable(_try_faq7):
+                    already_faq = (
+                        _faq_answer_usable(data, question, qn)
+                        and _chatbot_faq_score(data) >= 0.5
+                    )
+                    if not already_faq:
+                        specific, reason = _try_faq7(question, qn, _faq7_topic)
+                        if specific:
+                            _dbg_trigger("faq7", f"topic={_faq7_topic!r} specific=yes source={reason}")
+                            return (_reply(specific, enhance=False), *rest) if rest else _reply(specific, enhance=False)
+                    else:
+                        _faq7_satisfies = getattr(_mod, "_faq7_answer_satisfies_intent", None)
+                        _faq7_weak = getattr(_mod, "_faq7_answer_too_weak", None)
+                        ans_faq = (data.get("answer") or "").strip()
+                        weak = callable(_faq7_weak) and _faq7_weak(ans_faq, _faq7_topic)
+                        if weak or (callable(_faq7_satisfies) and not _faq7_satisfies(qn, ans_faq, _faq7_topic)):
+                            if callable(_try_faq7):
+                                specific, reason = _try_faq7(question, qn, _faq7_topic)
+                                if specific:
+                                    _dbg_trigger("faq7", f"topic={_faq7_topic!r} specific=yes source={reason}")
+                                    return (_reply(specific, enhance=False), *rest) if rest else _reply(specific, enhance=False)
+                        curated_fn = getattr(_mod, "_faq7_curated_payload", None)
+                        if weak and callable(curated_fn):
+                            curated = curated_fn(_faq7_topic)
+                            if curated:
+                                _dbg_trigger("faq7", f"topic={_faq7_topic!r} specific=yes source=curated")
+                                return (_reply(curated, enhance=False), *rest) if rest else _reply(curated, enhance=False)
+                        _dbg_trigger("faq7", f"topic={_faq7_topic!r} specific=yes source=backup_faq")
+                        return (_reply(data, enhance=False), *rest) if rest else _reply(data, enhance=False)
+                fb7 = _faq7_fixe_fn(question, qn, _faq7_topic) if callable(_faq7_fixe_fn) else _fallback_from_site(question)
+                if not fb7:
+                    fb7 = _fallback_from_site(question)
+                if fb7:
+                    _dbg_trigger("faq7", f"topic={_faq7_topic!r} specific=no source=fixe")
+                    return (_reply(fb7, enhance=False), *rest) if rest else _reply(fb7, enhance=False)
+
             # Fallback page officielle (scraping live) seulement si l'index n'a pas déjà répondu correctement.
             # RÈGLE : tout mot-clé qui déclenche un wants_* dans _fallback_from_site
             # doit être listé ici pour le cas « pas trouvé dans l'index ».
@@ -2988,26 +3220,6 @@ if _original_ask:
                 "incident", "intemperie", "greve",
                 "retard", "panne", "maintenance", "innovation",
             )
-            # Sujets sensibles liés à la page présentation : toujours forcer le fallback
-            # sur la page presentation/ (pas chatbot-2303) car l'index peut ramener
-            # un chunk générique avec un score supérieur masquant la vraie réponse.
-            _presentation_triggers = (
-                "directeur", "directeurs", "dg ", "pdg",
-                "predecesseur", "prédécesseur", "successeur", "successeurs",
-                "avant lui", "avant elle", "qui etait", "qui était",
-                "presentation", "historique", "histoire", "creation",
-                "assane", "mbengue", "thierno", "ousmane sylla",
-                "conseil d'administration", "actionnariat",
-                "emploi", "recrutement", "candidature",
-                "fondateur", "capital social", "actionnaire",
-                "christian salvy", "moussa diagne", "dame diop",
-                "moussa diop", "omar sylla", "mamadou goudiaby",
-            )
-            if any(k in qn for k in _presentation_triggers):
-                fb_pres = _fallback_presentation_page(question)
-                if fb_pres:
-                    return (_reply(fb_pres), *rest) if rest else _reply(fb_pres)
-
             if (
                 any(k in qn for k in _site_triggers)
                 and not rag_ok

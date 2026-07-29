@@ -286,7 +286,7 @@ function isVagueQuestion(q) {
   if (norm === 'dem dikk' || norm === 'dakar dem dikk') return false
   const vague = new Set([
     'dakar', 'ddd', 'demdikk', 'dem dikk',
-    'voyager', 'voyage', 'transport', 'bus', 'application', 'appli', 'info', 'informations', 'aide'
+    'voyager', 'voyage', 'transport', 'bus', 'info', 'informations', 'aide'
   ])
   if (vague.has(norm)) return true
   if (norm === 'je veux voyager' || norm === 'je veux voyager comment faire' || norm === 'comment faire') return true
@@ -305,10 +305,15 @@ function isVagueQuestion(q) {
     'afrique', 'gambie', 'banjul', 'international',
     'mission', 'presentation', 'histoire', 'vision', 'valeurs', 'objectif', 'interurbain',
     'comment', 'pourquoi', 'fonctionne', 'fonctionnement', 'avantage', 'avantages', 'explique',
+    'application', 'appli', 'bagage', 'bagages', 'remboursement', 'annulation', 'navette', 'aibd',
+    'magal', 'tabaski', 'location', 'geolocalisation', 'perturbation', 'fess dem',
   ]
   const hasIntent = intentWords.some(w => norm.includes(w))
+  const brandWords = ['dakar', 'senegal', 'dem', 'dikk', 'demdikk', 'ddd']
+  const topicWords = words.filter((w) => !brandWords.includes(w) && w.length >= 2)
+  // Sujet explicite + marque (ex. « application dem dikk », « colis dem dikk ») → backend
+  if (topicWords.length >= 1) return false
   if (!hasIntent) {
-    const brandWords = ['dakar', 'senegal', 'dem', 'dikk', 'demdikk', 'ddd']
     const brandCount = words.filter(w => brandWords.includes(w)).length
     // si la majorité des mots sont juste la marque/pays → vague
     if (brandCount >= Math.max(2, Math.ceil(words.length * 0.6))) return true
@@ -737,6 +742,10 @@ function looksLikeProseNotSectionTitle(line) {
   if (/^alerte\s+info\b/i.test(s)) return true
   if (/^info\s+voyageur\b/i.test(s)) return true
   if (/^application\b/i.test(s)) return true
+  if (/^destinations et horaires\b/i.test(s)) return true
+  if (/^points de depart\b/i.test(s)) return true
+  if (/^tarification\b/i.test(s)) return true
+  if (/^[A-ZÀÂÄÉÈÊËÏÎÔÙÛÜÇ\s]{4,40}$/.test(s) && s === s.toUpperCase()) return true
   // Phrase complète plutôt qu’un intitulé court
   if (/[.!?]$/.test(s) && s.length > 28) return true
   const lower = (s.match(/[a-zàâäéèêëïîôùûüç]/g) || []).length
@@ -758,6 +767,43 @@ function appendInlineSeeMore(html, encodedDetails) {
   return `${html}${link}`
 }
 
+/** Regroupe les lignes courtes consécutives (extrait FAQ mal découpé). */
+function mergeBrokenProseLines(lines) {
+  const out = []
+  let buf = ''
+  const flush = () => {
+    if (buf) {
+      out.push(buf.trim())
+      buf = ''
+    }
+  }
+  for (const line of lines) {
+    const s = (line || '').trim()
+    if (!s) continue
+    if (/^[–•\-▸]/.test(s) || /^###\s/.test(s) || /^\*\*.+\*\*$/.test(s)) {
+      flush()
+      out.push(s)
+      continue
+    }
+    if (buf && (
+      s.length < 48
+      || /^[,.;:)]/.test(s)
+      || /^\d{1,2}h\d{0,2}\b/i.test(s)
+      || (/(->|→|:|à|a|et)$/i.test(buf) && s.length < 72)
+    )) {
+      const joiner = (buf.endsWith('-') || buf.endsWith('→') || buf.endsWith('->') || /^[,.;:)]/.test(s)) ? '' : ' '
+      buf += joiner + s
+    } else if (buf) {
+      flush()
+      buf = s
+    } else {
+      buf = s
+    }
+  }
+  flush()
+  return out.length ? out : lines
+}
+
 function formatResponseText(text) {
   if (!text || !text.trim()) return ''
 
@@ -766,6 +812,7 @@ function formatResponseText(text) {
   const safe = escapeHtml(cleaned)
   let lines = safe.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
   lines = collapseFonctionsListLines(lines)
+  lines = mergeBrokenProseLines(lines)
 
   let html = ''
   let inList = false
