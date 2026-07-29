@@ -1206,19 +1206,54 @@ def _app_rag_hit_usable(q_norm: str, hit: dict) -> bool:
     return _app_answer_satisfies_intent(q_norm, content)
 
 
-_APP_PRESENTATION = (
-    "L'application mobile Dem Dikk permet de consulter les horaires, réserver et gérer "
-    "vos billets (réseau urbain et interurbain selon les fonctionnalités disponibles). "
-    "Elle est disponible sur Google Play (Android) et l'App Store (iPhone). "
-    "Réservation aussi via booking.demdikk.sn, en agence ou au +221 33 824 10 10."
+_APP_GOOGLE_PLAY_URL = (
+    "https://play.google.com/store/apps/details?id=sn.demdikk.reservation.ddd_reservation"
+)
+_APP_APP_STORE_URL = "https://apps.apple.com/sn/app/dem-dikk/id6476461159?l=fr-FR"
+
+_APP_DOWNLOAD_ANSWER = (
+    "Pour télécharger l'application mobile Dem Dikk :\n\n"
+    f"• Android (Google Play) : {_APP_GOOGLE_PLAY_URL}\n"
+    f"• iPhone (App Store) : {_APP_APP_STORE_URL}\n\n"
+    "L'application permet d'acheter des titres de transport, planifier vos trajets, "
+    "consulter les horaires, suivre le réseau et recevoir des alertes en cas de perturbations."
+)
+
+_APP_PRESENTATION = _APP_DOWNLOAD_ANSWER + (
+    "\n\nRéservation aussi via booking.demdikk.sn, en agence ou au +221 33 824 10 10."
 )
 
 
-def _app_fixe_payload(fb: dict | None) -> dict | None:
-    """Synthèse courte si l'extrait FAQ est trop court ou mal découpé."""
-    fixe = {
-        "answer": _APP_PRESENTATION,
-        "summary": "Application mobile Dem Dikk",
+def _app_is_bare_app_query(q_norm: str) -> bool:
+    qn = (q_norm or "").strip()
+    if qn in ("application", "appli"):
+        return True
+    tokens = [t for t in qn.split() if t not in ("dem", "dikk", "dakar", "demdikk", "ddd", "mobile")]
+    return tokens in (["application"], ["appli"])
+
+
+def _app_normalize_download_answer(text: str) -> str:
+    """Reformate un extrait FAQ/RAG en réponse courte avec liens de téléchargement."""
+    import re
+
+    gp = re.search(r"https://play\.google\.com/\S+", text or "")
+    ap = re.search(r"https://apps\.apple\.com/\S+", text or "")
+    gp_url = (gp.group(0).rstrip(".,;)]") if gp else _APP_GOOGLE_PLAY_URL)
+    ap_url = (ap.group(0).rstrip(".,;)]") if ap else _APP_APP_STORE_URL)
+    return (
+        "Pour télécharger l'application mobile Dem Dikk :\n\n"
+        f"• Android (Google Play) : {gp_url}\n"
+        f"• iPhone (App Store) : {ap_url}\n\n"
+        "L'application permet d'acheter des titres de transport, planifier vos trajets, "
+        "consulter les horaires, suivre le réseau et recevoir des alertes en cas de perturbations."
+    )
+
+
+def _app_download_payload(source_text: str = "") -> dict:
+    answer = _app_normalize_download_answer(source_text) if source_text else _APP_DOWNLOAD_ANSWER
+    return {
+        "answer": answer,
+        "summary": "Télécharger l'application Dem Dikk",
         "sources": [{"title": "Chatbot Dakar Dem Dikk", "url": "https://demdikk.sn/chatbot-2303/", "score": 1.0}],
         "results": [],
         "query_type": "general",
@@ -1228,11 +1263,19 @@ def _app_fixe_payload(fb: dict | None) -> dict | None:
         "is_line_query": False,
         "show_more_info": True,
     }
+
+
+def _app_fixe_payload(fb: dict | None) -> dict | None:
+    """Synthèse courte avec liens Google Play / App Store."""
+    source = (fb or {}).get("answer") or ""
+    fixe = _app_download_payload(source)
     if not fb:
         return fixe
     ans = (fb.get("answer") or "").strip()
-    if _app_answer_too_weak(ans):
+    if _app_answer_too_weak(ans) or "play.google.com" not in ans:
         return {**fb, **fixe}
+    if len(ans) > 520:
+        return {**fb, **_app_download_payload(ans)}
     return fb
 
 
@@ -1250,10 +1293,20 @@ def _app_clip_answer_for_intent(q_norm: str, answer: str) -> str:
             idx = text.find(marker)
             if idx > 40:
                 return text[:idx].strip()
+    if _app_download_intent(q_norm) or _app_is_bare_app_query(q_norm):
+        for marker in (
+            "Fonctionnalités", "FONCTIONNALIT", "Fonctionnalites",
+            "réservation des billets", "Réservation par téléphone",
+        ):
+            idx = text.find(marker)
+            if idx > 80:
+                return _app_normalize_download_answer(text[:idx])
     return text
 
 
 def _try_app_specific_answer(question: str, q_norm: str) -> tuple[dict | None, str]:
+    if _app_download_intent(q_norm) or _app_is_bare_app_query(q_norm):
+        return _app_download_payload(), "curated_download_links"
     search_faq, faq_score_fn, faq_usable_fn = _interurban_overview_faq_helpers()
     try:
         import sys as _sys
@@ -1687,10 +1740,10 @@ _PRESENTATION_RECRUTEMENT = (
     "Pour toute question RH ou candidature spontanée : rh@demdikk.sn."
 )
 _PRESENTATION_MISSION_FALLBACK = (
-    "Vision : offrir un service public de transport moderne et adapté aux exigences de mobilité "
-    "actuelles et futures.\n\n"
-    "Mission : transporter les personnes et les biens partout au Sénégal et dans la sous-région "
-    "avec des moyens sécurisés et confortables."
+    "Offrir un service public de transport moderne et adapté aux besoins de mobilité "
+    "actuels et futurs, transporter les personnes et les biens partout au Sénégal et dans "
+    "la sous-région en toute sécurité, et mettre en place un système de transport "
+    "performant au Sénégal et en Afrique de l'Ouest."
 )
 _PRESENTATION_MARKERS = (
     "c est quoi ddd", "qu est ce que ddd", "quest ce que ddd",
@@ -1751,7 +1804,39 @@ def _presentation_recruitment_intent(q_norm: str) -> bool:
 
 
 def _presentation_mission_intent(q_norm: str) -> bool:
-    return any(m in q_norm for m in ("mission", "vision", "valeurs", "objectif"))
+    return any(m in q_norm for m in ("mission", "vision", "valeurs", "objectif", "ambition"))
+
+
+def _presentation_subtheme(q_norm: str) -> str | None:
+    """Sous-thème présentation explicitement demandé (un seul)."""
+    qn = (q_norm or "").strip()
+    if any(m in qn for m in ("valeurs", "objectif")):
+        return "valeurs"
+    if "ambition" in qn:
+        return "ambition"
+    if "vision" in qn:
+        return "vision"
+    if "mission" in qn:
+        return "mission"
+    return None
+
+
+def _mission_faq_payload() -> dict:
+    return {
+        "answer": _PRESENTATION_MISSION_FALLBACK,
+        "summary": "Mission – Dakar Dem Dikk",
+        "sources": [
+            {"title": "FAQ Dakar Dem Dikk", "url": "https://demdikk.sn/chatbot-2303/", "score": 1.0},
+            {"title": "Présentation – Dakar Dem Dikk", "url": "https://demdikk.sn/presentation/", "score": 0.9},
+        ],
+        "results": [],
+        "query_type": "general",
+        "needs_clarification": False,
+        "has_structured_data": False,
+        "is_city_query": False,
+        "is_line_query": False,
+        "show_more_info": True,
+    }
 
 
 def _presentation_recruitment_answer_too_weak(answer: str) -> bool:
@@ -1911,7 +1996,33 @@ def _presentation_fixe_payload(fb: dict | None = None) -> dict:
     }
 
 
-def _try_presentation_mission_extract() -> dict | None:
+def _try_presentation_mission_extract(question: str = "", q_norm: str = "") -> dict | None:
+    q_norm = (q_norm or _norm(question)).strip()
+    sub = _presentation_subtheme(q_norm)
+
+    # « mission » seule → bloc FAQ officiel (texte complet), pas la ligne tronquée de /presentation/
+    if sub == "mission":
+        try:
+            import sys as _sys
+            app_mod = _sys.modules.get("app")
+            search_faq = getattr(app_mod, "_search_chatbot_page_blocks", None)
+            if callable(search_faq):
+                for q in ("Mission de Dakar Dem Dikk", question):
+                    fb = search_faq(q)
+                    ans = (fb or {}).get("answer", "").strip()
+                    if (
+                        ans
+                        and len(ans) >= 120
+                        and _presentation_answer_satisfies_intent(q_norm, ans)
+                    ):
+                        out = dict(fb)
+                        out.setdefault("query_type", "general")
+                        out.setdefault("show_more_info", True)
+                        return out
+        except Exception:
+            pass
+        return _mission_faq_payload()
+
     try:
         import sys as _sys
         app_mod = _sys.modules.get("app")
@@ -1919,35 +2030,21 @@ def _try_presentation_mission_extract() -> dict | None:
         extract = getattr(app_mod, "_extract_section_priority", None) if app_mod else None
         make = getattr(app_mod, "_make_chatbot_result", None) if app_mod else None
         if not (callable(fetch) and callable(extract) and callable(make)):
-            return None
+            return _mission_faq_payload() if sub is None else None
         page = fetch("https://demdikk.sn/presentation/")
         if not page:
-            return None
-        section = extract(
-            page,
-            ("Vision", "Mission", "Offrir une meilleure expérience", "Offrir une meilleure experience"),
-            max_chars=700,
-        )
+            return _mission_faq_payload() if sub is None else None
+        markers = ("Vision", "Mission", "Offrir une meilleure expérience", "Offrir une meilleure experience")
+        section = extract(page, markers, max_chars=1800)
         if section and len(section.strip()) >= 60:
-            out = make(section)
+            out = make(section, question, q_norm or question)
             out.setdefault("query_type", "general")
             out.setdefault("show_more_info", True)
             out["sources"] = [{"title": "Présentation – Dakar Dem Dikk", "url": "https://demdikk.sn/presentation/", "score": 0.95}]
             return out
     except Exception:
         pass
-    return {
-        "answer": _PRESENTATION_MISSION_FALLBACK,
-        "summary": "Mission et vision – Dakar Dem Dikk",
-        "sources": [{"title": "Présentation – Dakar Dem Dikk", "url": "https://demdikk.sn/presentation/", "score": 1.0}],
-        "results": [],
-        "query_type": "general",
-        "needs_clarification": False,
-        "has_structured_data": False,
-        "is_city_query": False,
-        "is_line_query": False,
-        "show_more_info": True,
-    }
+    return _mission_faq_payload()
 
 
 def _try_presentation_recruitment_payload() -> dict:
@@ -1989,7 +2086,7 @@ def _try_presentation_specific_answer(question: str, q_norm: str) -> tuple[dict 
         if pres:
             return pres, "presentation_directeurs"
     if _presentation_mission_intent(q_norm):
-        mission = _try_presentation_mission_extract()
+        mission = _try_presentation_mission_extract(question, q_norm)
         if mission:
             return mission, "presentation_mission"
     if _presentation_recruitment_intent(q_norm):
@@ -2005,11 +2102,21 @@ def _try_presentation_specific_answer(question: str, q_norm: str) -> tuple[dict 
                 page = fetch("https://demdikk.sn/chatbot-2303/")
                 section = extract(
                     page or "",
-                    ("recrutement", "Recrutement", "offres d'emploi", "offres d emploi"),
+                    (
+                        "Postuler à Dakar Dem Dikk",
+                        "Comment postuler chez Dakar Dem Dikk",
+                        "offres d'emploi",
+                        "jobs.demdikk.sn",
+                        "Recrutement",
+                        "recrutement",
+                    ),
                     max_chars=900,
                 )
                 if section and _presentation_answer_satisfies_intent(q_norm, section):
-                    out = make(section)
+                    clip_fn = getattr(app_mod, "_faq_clip_recruitment_section", None)
+                    if callable(clip_fn):
+                        section = clip_fn(section)
+                    out = make(section, question, q_norm)
                     out.setdefault("query_type", "general")
                     out.setdefault("show_more_info", True)
                     return out, "faq_extract_recrutement"
@@ -2239,7 +2346,7 @@ def _faq7_rag_hit_usable(q_norm: str, hit: dict, topic_id: str) -> bool:
 
 _FAQ7_EXTRACT_MARKERS: dict[str, tuple[str, ...]] = {
     "bagage": ("Politique bagages", "Politique des Bagages", "Bagages à bord"),
-    "remboursement": ("Remboursement", "Les demandes de remboursement"),
+    "remboursement": ("Remboursement de billet", "Les demandes de remboursement", "Remboursement"),
     "annulation": ("Annulation et report", "Annulation/Report"),
     "report": ("Annulation et report", "report de votre voyage"),
     "geolocalisation": (
@@ -2298,7 +2405,7 @@ def _try_faq7_specific_answer(
             section = extract(page or "", markers, max_chars=1000)
             if section and _faq7_answer_satisfies_intent(q_norm, section, topic_id):
                 section = _faq7_clip_answer(topic_id, section)
-                out = make(section)
+                out = make(section, question, q_norm)
                 out.setdefault("query_type", "general")
                 out.setdefault("show_more_info", True)
                 return out, f"faq_extract_{topic_id}"
@@ -2377,6 +2484,14 @@ def _faq7_clip_answer(topic_id: str, answer: str) -> str:
         for marker in ("PROGRAMME", "INFORMATIONS TECHNIQUES", "Réseau Fess Dem"):
             idx = text.find(marker)
             if idx > 120:
+                return text[:idx].strip()
+    if topic_id == "remboursement":
+        for marker in (
+            "\nBAGAGES", "\nBagages", "\nSUGGESTIONS", "\nGESTION DES",
+            "\nTarification", "\nTEK DEM",
+        ):
+            idx = text.find(marker)
+            if idx > 80:
                 return text[:idx].strip()
     return text
 

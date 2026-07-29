@@ -662,17 +662,65 @@ function stripMarkdownHeadings(text) {
 }
 
 /**
- * Convertit les URLs brutes en liens <a> cliquables.
- * Doit être appelé APRÈS escapeHtml (les & sont déjà &amp; mais c'est OK dans href).
+ * Convertit URLs et emails en liens <a> cliquables.
+ * Doit être appelé APRÈS escapeHtml (les & sont déjà &amp; dans href, OK pour affichage).
  */
 function linkifyText(html) {
-  return html.replace(/https?:\/\/[^\s<>"']+/g, function (url) {
-    // Nettoyer la ponctuation finale parasite
-    url = url.replace(/[.,;:!?\)\]>]+$/, '')
-    // Afficher seulement le domaine (ex: play.google.com)
+  if (!html) return html
+  const APP_LINKS = {
+    'google play store': 'https://play.google.com/store/apps/details?id=sn.demdikk.reservation.ddd_reservation',
+    'google play': 'https://play.google.com/store/apps/details?id=sn.demdikk.reservation.ddd_reservation',
+    'play store': 'https://play.google.com/store/apps/details?id=sn.demdikk.reservation.ddd_reservation',
+    'app store': 'https://apps.apple.com/sn/app/dem-dikk/id6476461159?l=fr-FR',
+  }
+  // Emails
+  html = html.replace(
+    /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
+    function (email) {
+      return `<a href="mailto:${email}" class="answer-link">${email}</a>`
+    }
+  )
+  // https:// ou http://
+  html = html.replace(/https?:\/\/[^\s<>"']+/g, function (url) {
+    url = url.replace(/[.,;:!?)>\]]+$/, '')
     const domain = url.replace(/^https?:\/\//, '').replace(/\/.*$/, '')
     return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="answer-link">${domain} ↗</a>`
   })
+  // www. sans schéma
+  html = html.replace(/\bwww\.[^\s<>"']+/g, function (url) {
+    url = url.replace(/[.,;:!?)>\]]+$/, '')
+    const href = url.startsWith('http') ? url : `https://${url}`
+    const domain = url.replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="answer-link">${domain} ↗</a>`
+  })
+  // Google Play / App Store (si l'URL n'est pas déjà dans le texte)
+  if (!/play\.google\.com|apps\.apple\.com/.test(html)) {
+    for (const [label, href] of Object.entries(APP_LINKS)) {
+      const re = new RegExp(`\\b(${label.replace(/ /g, '\\s+')})\\b`, 'gi')
+      html = html.replace(re, (match) =>
+        `<a href="${href}" target="_blank" rel="noopener noreferrer" class="answer-link">${match} ↗</a>`
+      )
+    }
+  }
+  return html
+}
+
+/** Coupe au dernier . ; ? ! complet avant maxLength (jamais mid-word). */
+function truncateAtSentence(text, maxLength) {
+  if (!text || text.length <= maxLength) return text || ''
+  const chunk = text.substring(0, maxLength)
+  let lastBreak = -1
+  for (let i = 0; i < chunk.length; i++) {
+    if ('.;?!'.includes(chunk[i])) lastBreak = i
+  }
+  if (lastBreak >= Math.floor(maxLength * 0.35)) {
+    return chunk.substring(0, lastBreak + 1).trimEnd()
+  }
+  const sp = chunk.lastIndexOf(' ')
+  if (sp >= Math.floor(maxLength * 0.45)) {
+    return chunk.substring(0, sp).trimEnd() + '…'
+  }
+  return chunk.trimEnd() + '…'
 }
 
 /**
@@ -868,7 +916,7 @@ function formatResponseText(text) {
 
   if (inList) html += '</div>'
 
-  return html || `<div class="preview">${safe.replace(/\n/g, '<br>')}</div>`
+  return html || `<div class="preview">${linkifyText(safe.replace(/\n/g, '<br>'))}</div>`
 }
 function askForLineDetails(lineNumber) {
     const qin = document.getElementById('q');
@@ -1613,7 +1661,7 @@ form.addEventListener('submit', async (e)=>{
         // Afficher un extrait si la réponse est longue
         const isTruncated = cleanAnswer.length > PREVIEW_MAX
         const previewText = isTruncated
-          ? cleanAnswer.substring(0, PREVIEW_MAX).trimEnd()
+          ? truncateAtSentence(cleanAnswer, PREVIEW_MAX)
           : cleanAnswer
         const showExpand = !useProseAnswer && !isLineQuery && !isCityQuery && isTruncated
         const encodedDetails = encodeURIComponent(detailsContent)
@@ -1814,8 +1862,7 @@ function extractLineNumberOnly(lineStr) {
 }
 
 function truncateText(text, maxLength) {
-    if (text.length <= maxLength) return text;
-    return text.substring(0, maxLength - 3) + '...';
+    return truncateAtSentence(text, maxLength)
 }
 
 // Ajouter les fonctions manquantes

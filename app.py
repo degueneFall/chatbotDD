@@ -1024,8 +1024,17 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
     if not context or len(context) < 20:
         return original_data
 
+    targeted = bool(original_data.get("faq_needs_targeted_llm"))
     history_block = _format_client_history_for_prompt(client_history or [])
-    if history_block:
+    if targeted:
+        core = (
+            f"Texte source (site officiel DDD — ne rien inventer en dehors de ce texte) :\n"
+            f"---\n{context}\n---\n\n"
+            f"Question : {question}\n\n"
+            f"{_FAQ_TARGETED_LLM_INSTRUCTION}"
+        )
+        user_prompt = f"{history_block}\n\n{core}" if history_block else core
+    elif history_block:
         user_prompt = (
             f"{history_block}\n\n"
             f"Contexte (site officiel DDD — ne rien inventer en dehors de ce texte) :\n---\n{context}\n---\n\n"
@@ -1041,6 +1050,8 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
             f"Conserve tous les faits (chiffres, délais, contacts). N'ajoute aucune information absente du contexte."
         )
 
+    llm_temperature = 0.2 if targeted else 0.3
+
     try:
         import requests as _requests
         r = _requests.post(
@@ -1055,7 +1066,7 @@ def _enhance_with_deepseek(original_data: dict, question: str, client_history: l
                     {"role": "system", "content": _LLM_SYSTEM},
                     {"role": "user", "content": user_prompt},
                 ],
-                "temperature": 0.3,
+                "temperature": llm_temperature,
                 "max_tokens": 1200,
             },
             timeout=cfg["timeout_s"],
@@ -1706,6 +1717,25 @@ _FAQ_FILLER_WORDS = frozenset({
     "definition", "définition", "explique", "expliquer", "parle", "parler",
 })
 
+_FAQ_BRAND_TOKENS = frozenset({
+    "dem", "dikk", "dakar", "demdikk", "ddd", "sdd", "add", "senegal", "sénégal",
+})
+
+_FAQ_GENERIC_INTENT_WORDS = frozenset({
+    "presentation", "presenter", "entreprise", "societe", "société", "histoire",
+    "connaitre", "connaître", "cest", "quoi", "definition", "définition",
+})
+
+_FAQ_TARGETED_LLM_INSTRUCTION = (
+    "Réponds uniquement à ce qui est demandé dans la question, en te basant "
+    "uniquement sur le texte fourni ci-dessous. N'ajoute aucune information "
+    "non demandée. Ne reformule pas au-delà du nécessaire. N'invente rien "
+    "qui n'est pas dans le texte."
+)
+
+# Plafond de sécurité pour les questions ciblées (évite les dumps kilométriques)
+_FAQ_SPECIFIC_ANSWER_MAX = 520
+
 _STRUCTURED_QUERY_TYPES = frozenset({
     "all_lines_summary", "line_X", "lines_to_stop", "line_details", "city_info",
     "interurban_overview",
@@ -1724,6 +1754,210 @@ def _faq_query_tokens(qn: str) -> list[str]:
                 seen.add(w)
                 out.append(w)
     return out
+
+
+def _faq_specific_tokens(qn: str) -> list[str]:
+    """Tokens FAQ hors marque DDD (évite de scorer tous les blocs « dem dikk »)."""
+    return [w for w in _faq_query_tokens(qn) if w not in _FAQ_BRAND_TOKENS]
+
+
+def _is_generic_faq_query(question: str, qn_raw: str) -> bool:
+    """Question large (présentation globale, nom de la société) → garder le bloc entier."""
+    if _is_bare_company_name_query(qn_raw):
+        return True
+    specific = _faq_specific_tokens(qn_raw)
+    if not specific:
+        return True
+    if len(specific) == 1 and specific[0] in _FAQ_GENERIC_INTENT_WORDS:
+        return True
+    if all(w in _FAQ_GENERIC_INTENT_WORDS for w in specific):
+        return True
+    return False
+
+
+def _apply_faq_answer_length_cap(text: str, question: str, qn_raw: str) -> str:
+    """Limite la longueur des réponses ciblées (coupe propre au dernier point)."""
+    if not text or _is_generic_faq_query(question, qn_raw):
+        return text
+    if len(text) <= _FAQ_SPECIFIC_ANSWER_MAX:
+        return text
+    return _truncate_at_sentence_boundary(text, _FAQ_SPECIFIC_ANSWER_MAX)
+
+
+def _sanitize_faq_payload(data: dict, question: str, qn_raw: str) -> dict:
+    """Raccourcit les dumps FAQ kilométriques (tous chemins wrapper/backup)."""
+    if not data:
+        return data
+    out = dict(data)
+    ans = (out.get("answer") or "").strip()
+    if not ans or _is_generic_faq_query(question, qn_raw):
+        return out
+    if len(ans) <= _FAQ_SPECIFIC_ANSWER_MAX:
+        return out
+    narrowed, _ = _faq_narrow_section_for_question(question, qn_raw, ans)
+    prose = _format_faq_page_prose(narrowed) if narrowed else ans
+    clean = _light_clean(prose) if prose else ans
+    clean = _apply_faq_answer_length_cap(clean, question, qn_raw)
+    if clean:
+        out["answer"] = clean
+        if out.get("summary"):
+            out["summary"] = _truncate_at_sentence_boundary(clean, 280)
+    return out
+
+
+def _truncate_at_sentence_boundary(text: str, max_len: int) -> str:
+    """Coupe proprement au dernier . ; ? ! complet avant max_len (jamais mid-word)."""
+    if not text or len(text) <= max_len:
+        return (text or "").strip()
+    chunk = text[:max_len]
+    last_break = -1
+    for i, ch in enumerate(chunk):
+        if ch in ".;?!":
+            last_break = i
+    if last_break >= int(max_len * 0.35):
+        return chunk[: last_break + 1].strip()
+    sp = chunk.rfind(" ")
+    if sp >= int(max_len * 0.45):
+        return chunk[:sp].rstrip() + "…"
+    return chunk.rstrip() + "…"
+
+
+def _faq_line_is_short_label(stripped: str) -> bool:
+    """Rubrique courte type « Vision », « Mission », « CRÉATION » (ligne seule)."""
+    if not stripped or len(stripped) > 55:
+        return False
+    if stripped.endswith((".", "?", "!", ":")):
+        return False
+    if "@" in stripped or stripped.startswith(("http", "www.", "+", "–", "-", "•")):
+        return False
+    if re.match(r"^\+?\d", stripped):
+        return False
+    if stripped.isupper() and len(stripped.split()) <= 4:
+        return True
+    words = stripped.split()
+    return len(words) <= 4 and stripped[0].isupper()
+
+
+def _faq_split_labeled_sections(text: str) -> list[tuple[str, str]]:
+    """Découpe un extrait présentation/FAQ en paires (label, corps)."""
+    lines = [ln.strip() for ln in (text or "").replace("\r\n", "\n").split("\n") if ln.strip()]
+    sections: list[tuple[str, str]] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if _faq_line_is_short_label(line):
+            label = line
+            body: list[str] = []
+            i += 1
+            while i < len(lines):
+                nxt = lines[i]
+                if _faq_line_is_short_label(nxt) and not nxt.lower().startswith(
+                    ("de l", "du ", "de la ", "des ", "via ", "par ", "en ", "à ", "a ")
+                ):
+                    break
+                body.append(nxt)
+                i += 1
+            sections.append((label, " ".join(body).strip()))
+        else:
+            i += 1
+    return sections
+
+
+def _faq_paragraph_matches_tokens(paragraph: str, tokens: list[str]) -> int:
+    """Score de pertinence d'un paragraphe pour les tokens question."""
+    if not paragraph or not tokens:
+        return 0
+    pn = _lemmatize(paragraph)
+    pl = paragraph.strip()
+    label = pl.split(":", 1)[0].strip().lower() if ":" in pl[:80] else ""
+    score = 0
+    for t in tokens:
+        tl = _lemmatize(t)
+        if label and (tl in label or label.startswith(tl)):
+            score += 12
+        elif re.match(rf"^{re.escape(tl)}\b", pl, re.I):
+            score += 10
+        elif tl in pn:
+            score += 3
+    return score
+
+
+def _faq_narrow_section_for_question(
+    question: str, qn_raw: str, section: str,
+) -> tuple[str, bool]:
+    """
+    Réduit un bloc FAQ au(x) sous-thème(s) demandé(s).
+    Retourne (section_filtrée, needs_targeted_llm).
+    """
+    text = (section or "").strip()
+    if not text or _is_generic_faq_query(question, qn_raw):
+        return text, False
+
+    tokens = _faq_specific_tokens(qn_raw)
+    if not tokens:
+        return text, False
+
+    # Bloc déjà intitulé sur le sujet (ex. « Mission de Dakar Dem Dikk ») → corps complet
+    lines = [ln.strip() for ln in text.replace("\r\n", "\n").split("\n") if ln.strip()]
+    if lines:
+        title_n = _lemmatize(lines[0])
+        if all(t in title_n for t in tokens):
+            body = "\n".join(lines[1:]).strip()
+            if len(body) >= 40:
+                return body, False
+
+    labeled = _faq_split_labeled_sections(text)
+    if len(labeled) >= 2:
+        scored = [(label, body, _faq_paragraph_matches_tokens(f"{label} {body}", tokens))
+                  for label, body in labeled]
+        best = max(s for *_, s in scored)
+        if best > 0:
+            # Correspondance exacte label ↔ token (ex. « mission » → section Mission seulement)
+            exact = [
+                (label, body, s) for label, body, s in scored
+                if any(
+                    _lemmatize(t) == _lemmatize(label)
+                    or _lemmatize(label).startswith(_lemmatize(t))
+                    for t in tokens
+                ) and s > 0
+            ]
+            if exact:
+                top = max(s for *_, s in exact)
+                picked = [f"{label}\n{body}" for label, body, s in exact if s >= top]
+                if picked:
+                    return "\n\n".join(picked).strip(), False
+            matched = [f"{label}\n{body}" for label, body, s in scored if s >= best and s > 0]
+            if matched and len(matched) < len(labeled):
+                return "\n\n".join(matched).strip(), False
+
+    prose = _format_faq_page_prose(text)
+    paras = [p.strip() for p in prose.split("\n\n") if p.strip()]
+    if len(paras) <= 1:
+        return text, False
+
+    scored_p = [(p, _faq_paragraph_matches_tokens(p, tokens)) for p in paras]
+    best_p = max(s for _, s in scored_p)
+    if best_p <= 0:
+        return text, True
+    matched_p = [p for p, s in scored_p if s >= best_p and s > 0]
+    if not matched_p or len(matched_p) >= len(paras):
+        return text, True
+    return "\n\n".join(matched_p).strip(), False
+
+
+def _faq_clip_recruitment_section(section: str) -> str:
+    """Évite d'emporter le répertoire contact (Partenariats, Objets perdus…) après Recrutement."""
+    if not section:
+        return section
+    stop_markers = (
+        "\nPartenariats\n", "\nObjets perdus\n", "\nHoraires des agences\n",
+        "\nTarifs des abonnements", "\nModes de paiement",
+    )
+    for marker in stop_markers:
+        idx = section.find(marker)
+        if idx > 40:
+            return section[:idx].strip()
+    return section
 
 
 def _chatbot_faq_score(result: dict | None) -> float:
@@ -1963,6 +2197,14 @@ def _line_looks_like_section_title(stripped: str) -> bool:
         return True
     if _re.match(r"^(Google Play|App Store|Sur iPhone|Sur Android)\b", stripped, _re.I):
         return False
+    # Étymologie / explication (« De l'anglais… », « Du wolof… ») — pas un titre de rubrique
+    if _re.match(r"^(De l[''']|Du |De la |Des )", stripped, _re.I):
+        return False
+    if "\u00ab" in stripped and "\u00bb" in stripped:
+        return False
+    # Nom de lieu ou terminus en cours de phrase (« Terminus de Liberté 5 »)
+    if _re.match(r"^Terminus\b", stripped, _re.I):
+        return False
     title = _strip_section_number(stripped)
     if not title or title[0].islower():
         return False
@@ -1976,6 +2218,24 @@ def _line_looks_like_section_title(stripped: str) -> bool:
     ):
         return False
     return 8 <= len(title) <= 72
+
+
+def _line_continues_from_previous(prev: str) -> bool:
+    """True si la ligne précédente est une phrase inachevée (suite sur la ligne suivante)."""
+    import re as _re
+
+    prev = (prev or "").strip()
+    if not prev:
+        return False
+    if _re.search(r'[.!?»"\']\s*$', prev):
+        return False
+    if _re.search(
+        r"\b(au|aux|à|a|de|du|des|notamment|comme|pour|ou|et|un|une|le|la|les|en|par|avec|sans|chez|vers|sur|dans)\s*$",
+        prev,
+        _re.I,
+    ):
+        return True
+    return not _re.search(r'[.!?:»"\']\s*$', prev)
 
 
 def _clip_at_next_section_title(text: str) -> str:
@@ -1992,11 +2252,13 @@ def _clip_at_next_section_title(text: str) -> str:
         if not stripped:
             kept.append(line)
             continue
+        prev = kept[-1].strip() if kept else ""
         if (
             len(kept) >= 2
             and _line_looks_like_section_title(stripped)
             and not stripped.endswith("?")
             and _norm(_strip_section_number(stripped)) != first_norm
+            and not _line_continues_from_previous(prev)
         ):
             break
         kept.append(line)
@@ -2060,7 +2322,7 @@ def _search_chatbot_page_blocks(question: str) -> dict | None:
     if not qn or len(qn) < 2:
         return None
 
-    query_words = _faq_query_tokens(qn)
+    query_words = _faq_specific_tokens(qn) or _faq_query_tokens(qn)
     if not query_words:
         return None
 
@@ -2110,12 +2372,27 @@ def _search_chatbot_page_blocks(question: str) -> dict | None:
             "rechargement",
             "Tek Dem",
         )),
-        ("recrutement", ("recrutement", "Recrutement", "offres d'emploi")),
-        ("emploi", ("recrutement", "Recrutement", "offres d'emploi")),
+        ("recrutement", (
+            "Postuler à Dakar Dem Dikk",
+            "Comment postuler chez Dakar Dem Dikk",
+            "offres d'emploi",
+            "jobs.demdikk.sn",
+            "Recrutement",
+            "recrutement",
+        )),
+        ("emploi", (
+            "Postuler à Dakar Dem Dikk",
+            "Comment postuler chez Dakar Dem Dikk",
+            "offres d'emploi",
+            "jobs.demdikk.sn",
+            "Recrutement",
+            "recrutement",
+        )),
         ("remboursement", (
-            "Remboursement",
-            "Les demandes de remboursement",
             "Remboursement de billet",
+            "Les demandes de remboursement",
+            "Annulation et report",
+            "Remboursement",
         )),
         ("annulation", ("Annulation et report", "Annulation/Report")),
         ("report", ("Annulation et report", "report de votre voyage")),
@@ -2212,11 +2489,13 @@ def _search_chatbot_page_blocks(question: str) -> dict | None:
     ]
     for key, markers in _topic_markers:
         if key in qn_raw:
-            section = _extract_section_priority(page_text, markers, max_chars=1800)
+            section = _extract_section_priority(page_text, markers, max_chars=800)
             if section and len(section) >= 40 and not _block_looks_like_nav_junk(section):
+                if key in ("recrutement", "emploi"):
+                    section = _faq_clip_recruitment_section(section)
                 section = _clip_at_next_section_title(section)
                 section = _faq_clip_for_question_intent(question, qn_raw, section)
-                result = _make_chatbot_result(section)
+                result = _make_chatbot_result(section, question, qn_raw)
                 result["sources"] = [{"title": "FAQ Dakar Dem Dikk", "url": url, "score": 0.95}]
                 if result.get("results"):
                     result["results"][0]["url"] = url
@@ -2275,9 +2554,11 @@ def _search_chatbot_page_blocks(question: str) -> dict | None:
     except ValueError:
         pass
 
-    section = _clip_at_next_section_title(best[:1800])
+    # Bloc déjà découpé par _split_chatbot_page_blocks — ne pas re-couper (coupait
+    # au milieu des phrases : « notamment au / Terminus… », « identité : / De l'anglais… »).
+    section = best[:1800].strip()
     section = _faq_clip_for_question_intent(question, qn_raw, section)
-    result = _make_chatbot_result(section)
+    result = _make_chatbot_result(section, question, qn_raw)
     result["sources"] = [{
         "title": "FAQ Dakar Dem Dikk",
         "url": url,
@@ -2314,7 +2595,7 @@ def _fallback_presentation_page(question: str) -> dict | None:
     if callable(_recruit_fn) and _recruit_fn(qn) and callable(_recruit_payload_fn):
         return _recruit_payload_fn()
     if callable(_mission_fn) and _mission_fn(qn) and callable(_mission_extract_fn):
-        mission = _mission_extract_fn()
+        mission = _mission_extract_fn(question, qn)
         if mission:
             return mission
     if callable(_dir_fn) and _dir_fn(qn):
@@ -2329,6 +2610,13 @@ def _fallback_presentation_page(question: str) -> dict | None:
     if _is_bare_company_name_query(qn):
         return _company_short_presentation_payload()
 
+    _specific_fn = getattr(_mod, "_presentation_has_specific_intent", None)
+    if callable(_specific_fn) and _specific_fn(qn):
+        fb = _search_chatbot_page_blocks(question)
+        if fb and (fb.get("answer") or "").strip():
+            return fb
+        return None
+
     import sys as _sys
     url = "https://demdikk.sn/presentation/"
     try:
@@ -2337,17 +2625,7 @@ def _fallback_presentation_page(question: str) -> dict | None:
         doc = _scrape_one(url)
         if not doc or not doc.get("text"):
             return None
-        return {
-            "answer": doc["text"],
-            "summary": "Présentation de Dakar Dem Dikk",
-            "sources": [{"title": "Présentation – Dakar Dem Dikk", "url": url, "score": 0.9}],
-            "results": [],
-            "query_type": "general",
-            "has_structured_data": False,
-            "is_city_query": False,
-            "is_line_query": False,
-            "needs_clarification": False,
-        }
+        return _make_chatbot_result(doc["text"], question, qn)
     except Exception as e:
         print(f"[_fallback_presentation_page] Erreur : {e}", file=_sys.stderr)
         return None
@@ -2548,11 +2826,18 @@ def _format_faq_page_prose(text: str) -> str:
     if len(raw) <= 1:
         return re.sub(r"\s+", " ", raw[0] if raw else text).strip()
 
-    title = raw[0]
-    body_in = raw[1:]
+    # Ne traiter la 1re ligne comme titre que si c'est une rubrique courte (ex. « Mission »),
+    # pas une phrase de contenu (« Les demandes de remboursement… »).
+    if _faq_line_is_short_label(raw[0]) or (len(raw[0]) < 72 and raw[0].endswith("?")):
+        title = raw[0]
+        body_in = raw[1:]
+    else:
+        title = ""
+        body_in = raw
+
     chunks = _merge_broken_faq_lines(body_in)
     if not chunks:
-        return re.sub(r"\s+", " ", title).strip()
+        return re.sub(r"\s+", " ", title or raw[0]).strip()
 
     paragraphs: list[str] = []
     i = 0
@@ -2707,26 +2992,47 @@ def _faq_clip_for_question_intent(question: str, qn_raw: str, section: str) -> s
                 idx = text.find(marker)
                 if idx > 0:
                     return text[:idx].strip()
+    if "remboursement" in qn_raw or ("billet" in qn_raw and "reservation" not in qn_raw):
+        for marker in (
+            "\nBAGAGES", "\nBagages", "\nANNULATION", "\nAnnulation et report",
+            "\nGESTION DES", "\nTarification", "\nTEK DEM", "\nTek Dem",
+            "\nRéservation", "\nReservation", "\nABONNEMENT", "\nAbonnement",
+        ):
+            idx = text.find(marker)
+            if idx > 80:
+                return text[:idx].strip()
     return text
 
 
-def _make_chatbot_result(section: str) -> dict:
+def _make_chatbot_result(section: str, question: str = "", qn_raw: str | None = None) -> dict:
     """Construit un dict résultat standard depuis un extrait de page officielle."""
+    qn_raw = qn_raw if qn_raw is not None else _norm(question)
+    section = _faq_clip_for_question_intent(question, qn_raw, section or "")
+    section, needs_llm = _faq_narrow_section_for_question(question, qn_raw, section)
     prose = _format_faq_page_prose(section) if section else section
     prose = _merge_short_prose_lines(prose) if prose else prose
     clean = _light_clean(prose) if prose else prose
-    return {
+    clean = _apply_faq_answer_length_cap(clean or "", question, qn_raw)
+    result = {
         "answer": clean,
-        "summary": (clean or "")[:280],
+        "summary": _truncate_at_sentence_boundary(clean or "", 280),
         "bullets": [],
         "sources": [{"title": "Dakar Dem Dikk", "url": "https://demdikk.sn/", "score": 1.0}],
-        "results": [{"url": "https://demdikk.sn/", "title": "Dakar Dem Dikk", "snippet": (clean or "")[:500], "full_text": clean}],
+        "results": [{
+            "url": "https://demdikk.sn/",
+            "title": "Dakar Dem Dikk",
+            "snippet": _truncate_at_sentence_boundary(clean or "", 500),
+            "full_text": clean,
+        }],
         "query_type": "general",
         "needs_clarification": False,
         "has_structured_data": False,
         "is_city_query": False,
         "is_line_query": False,
     }
+    if needs_llm:
+        result["faq_needs_targeted_llm"] = True
+    return result
 
 
 def _rag_answer_usable(data: dict) -> bool:
@@ -2845,7 +3151,13 @@ if _original_ask:
             qn = _norm(question)
 
         def _reply(data, enhance=True):
-            payload = _enhance_if_safe(data, question, client_history) if enhance else data
+            do_enhance = enhance or bool(data.get("faq_needs_targeted_llm"))
+            data = _sanitize_faq_payload(data, question, qn)
+            payload = (
+                _enhance_if_safe(data, question, client_history)
+                if do_enhance
+                else _prepare_final_answer(data)
+            )
             return jsonify(payload)
 
         conv_kind = _conversational_kind(question, qn)
@@ -2867,6 +3179,12 @@ if _original_ask:
 
         # ── Présentation DDD (nom de la société, « c'est quoi DDD », etc.) ───
         if _is_presentation_query(question, qn):
+            _try_pres = getattr(_mod, "_try_presentation_specific_answer", None)
+            _pres_intent = getattr(_mod, "_presentation_has_specific_intent", None)
+            if callable(_try_pres) and callable(_pres_intent) and _pres_intent(qn):
+                specific, _reason = _try_pres(question, qn)
+                if specific:
+                    return _reply(specific, enhance=False)
             fb_pres = _fallback_presentation_page(question)
             if fb_pres:
                 return _reply(fb_pres, enhance=False)
